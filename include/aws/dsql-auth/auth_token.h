@@ -3,12 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef AWS_DSQL_AUTH_TOKEN_H
-#define AWS_DSQL_AUTH_TOKEN_H
+#ifndef AWS_DSQL_AUTH_AUTH_TOKEN_H
+#define AWS_DSQL_AUTH_AUTH_TOKEN_H
 
-#include <aws/common/common.h>
+#include <aws/common/allocator.h>
+#include <aws/common/macros.h>
 #include <aws/dsql-auth/exports.h>
 #include <aws/io/io.h>
+#include <stdint.h>
 
 AWS_EXTERN_C_BEGIN
 
@@ -54,6 +56,17 @@ struct aws_dsql_auth_config {
      * For mocking, leave NULL otherwise
      */
     aws_io_clock_fn *system_clock_fn;
+    
+    /**
+     * The allocator used to create the config.
+     * Used for memory management.
+     */
+    struct aws_allocator *allocator;
+    
+    /**
+     * Flag indicating if region was dynamically allocated.
+     */
+    bool region_is_owned;
 };
 
 /**
@@ -90,10 +103,10 @@ AWS_DSQL_AUTH_API void aws_dsql_auth_config_clean_up(struct aws_dsql_auth_config
 
 /**
  * Initialize a new auth token.
- * 
+ *
  * @param[in] allocator The allocator to use for memory allocation
  * @param[out] token The token to initialize
- * 
+ *
  * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
  */
 AWS_DSQL_AUTH_API int aws_dsql_auth_token_init(struct aws_allocator *allocator, struct aws_dsql_auth_token *token);
@@ -196,4 +209,4 @@ AWS_DSQL_AUTH_API const char *aws_dsql_auth_token_get_str(const struct aws_dsql_
 
 AWS_EXTERN_C_END
 
-#endif /* AWS_DSQL_AUTH_TOKEN_H */
+#endif /* AWS_DSQL_AUTH_AUTH_TOKEN_H */

@@ -5,14 +5,19 @@
 
 #include <aws/auth/auth.h>
 #include <aws/auth/credentials.h>
+#include <aws/common/allocator.h>
 #include <aws/common/command_line_parser.h>
+#include <aws/common/common.h>
+#include <aws/common/error.h>
 #include <aws/common/string.h>
 #include <aws/dsql-auth/auth_token.h>
 #include <aws/io/io.h>
 #include <aws/io/tls_channel_handler.h>
 #include <aws/sdkutils/sdkutils.h>
 
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 struct dsql_token_ctx {
     struct aws_allocator *allocator;
@@ -36,11 +41,11 @@ static void s_usage(int exit_code) {
 
 /* Define constants for command line arguments if they're not already defined */
 #ifndef required_argument
-#define required_argument 1
+#    define required_argument 1
 #endif
 
 #ifndef no_argument
-#define no_argument 0
+#    define no_argument 0
 #endif
 
 static struct aws_cli_option s_long_options[] = {
@@ -54,7 +59,7 @@ static struct aws_cli_option s_long_options[] = {
 
 static bool s_parse_args(int argc, char **argv, struct dsql_token_ctx *ctx) {
     ctx->admin = false;
-    ctx->expires_in = 0;  // Use default value
+    ctx->expires_in = 0; // Use default value
 
     int opt;
     int option_index = 0;
@@ -141,7 +146,9 @@ int main(int argc, char **argv) {
     } else {
         /* Try to infer region from hostname */
         if (aws_dsql_auth_config_infer_region(allocator, &auth_config) != AWS_OP_SUCCESS) {
-            fprintf(stderr, "Error: Failed to infer AWS region from hostname. Please provide region explicitly with --region.\n");
+            fprintf(
+                stderr,
+                "Error: Failed to infer AWS region from hostname. Please provide region explicitly with --region.\n");
             result = AWS_OP_ERR;
             goto cleanup;
         }
@@ -155,8 +162,7 @@ int main(int argc, char **argv) {
     /* Create default credentials provider */
     struct aws_credentials_provider_chain_default_options credentials_provider_options = {0};
 
-    credentials_provider = aws_credentials_provider_new_chain_default(
-        allocator, &credentials_provider_options);
+    credentials_provider = aws_credentials_provider_new_chain_default(allocator, &credentials_provider_options);
 
     if (!credentials_provider) {
         fprintf(stderr, "Error: Failed to create credentials provider\n");
@@ -169,10 +175,10 @@ int main(int argc, char **argv) {
     /* Generate the auth token */
     struct aws_dsql_auth_token auth_token;
     aws_dsql_auth_token_init(allocator, &auth_token);
-    
+
     /* Generate the token */
     result = aws_dsql_auth_token_generate(allocator, &auth_config, ctx.admin, &auth_token);
-    
+
     if (result != AWS_OP_SUCCESS) {
         fprintf(stderr, "Error: Failed to generate auth token: %s\n", aws_error_str(aws_last_error()));
         goto cleanup_token;

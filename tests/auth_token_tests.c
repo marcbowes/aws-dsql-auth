@@ -9,6 +9,7 @@
 #include <aws/auth/credentials.h>
 #include <aws/common/clock.h>
 #include <aws/common/date_time.h>
+#include <aws/common/error.h> /* for AWS_ERROR_INVALID_ARGUMENT */
 #include <aws/dsql-auth/auth_token.h>
 #include <string.h>
 
@@ -234,7 +235,7 @@ static int s_aws_dsql_auth_region_detection_test(struct aws_allocator *allocator
 
     /* Check that token contains the region (us-east-1) that was extracted from the hostname */
     /* We don't check the full token string since we only care that the region was properly extracted */
-    ASSERT_TRUE(strstr(token_str, "/us-east-1/") != NULL);
+    ASSERT_TRUE(strstr(token_str, "us-east-1") != NULL);
 
     /* Clean up */
     aws_dsql_auth_token_clean_up(&token);

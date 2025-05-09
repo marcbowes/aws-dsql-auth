@@ -8,15 +8,21 @@
 #include <aws/auth/signing.h>
 #include <aws/auth/signing_config.h>
 #include <aws/auth/signing_result.h>
-#include <aws/common/clock.h>
+#include <aws/common/allocator.h> /* for aws_allocator, aws_mem_calloc/release */
+#include <aws/common/byte_buf.h>  /* for aws_byte_cursor_from_c_str */
+#include <aws/common/clock.h>     /* for aws_sys_clock_get_ticks function */
 #include <aws/common/condition_variable.h>
 #include <aws/common/date_time.h>
+#include <aws/common/error.h>
 #include <aws/common/mutex.h>
 #include <aws/common/string.h>
-#include <aws/common/time.h>
+#include <aws/common/zero.h> /* for AWS_ZERO_STRUCT */
 #include <aws/dsql-auth/auth_token.h>
 #include <aws/http/request_response.h>
-#include <aws/io/uri.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h> /* for strlen, strcmp, memcpy */
 
 /* Hostname format: <cluster-id>.dsql.<region>.on.aws, where cluster-id is 26 chars */
 #define DSQL_HOSTNAME_SUFFIX ".dsql."
@@ -26,21 +32,29 @@
 #define ACTION_DB_CONNECT "DbConnect"
 #define ACTION_DB_CONNECT_ADMIN "DbConnectAdmin"
 #define SERVICE_NAME "dsql"
-#define DEFAULT_EXPIRES_IN 900 /* 15 minutes */
+#define DEFAULT_EXPIRES_IN 900
 
 int aws_dsql_auth_config_init(struct aws_allocator *allocator, struct aws_dsql_auth_config *config) {
-
-    (void)allocator;
     AWS_ZERO_STRUCT(*config);
     config->expires_in = DEFAULT_EXPIRES_IN;
+    config->allocator = allocator;
+    config->region_is_owned = false;
 
     return AWS_OP_SUCCESS;
 }
 
 void aws_dsql_auth_config_clean_up(struct aws_dsql_auth_config *config) {
+    if (!config) {
+        return;
+    }
 
     if (config->credentials_provider) {
         aws_credentials_provider_release(config->credentials_provider);
+    }
+
+    /* Free the region if it was dynamically allocated in aws_dsql_auth_config_infer_region */
+    if (config->region_is_owned && config->region && config->allocator) {
+        aws_mem_release(config->allocator, (void*)config->region);
     }
 
     AWS_ZERO_STRUCT(*config);
@@ -166,61 +180,61 @@ static int s_extract_region_from_hostname(
     struct aws_allocator *allocator,
     const char *hostname,
     struct aws_string **region_str) {
-    
+
     *region_str = NULL;
-    
+
     if (!hostname) {
         return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
     }
-    
+
     size_t hostname_len = strlen(hostname);
-    
+
     /* Check if hostname is long enough to contain all required parts */
     /* Minimum length: 26 (cluster-id) + 6 (.dsql.) + 1 (min region length) + 7 (.on.aws) = 40 */
     if (hostname_len < 40) {
-        return AWS_OP_SUCCESS; /* Not enough characters for the expected format */
+        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT); /* Not enough characters for the expected format */
     }
-    
+
     /* Ensure hostname has the right prefix: exactly 26 chars followed by ".dsql." */
     const char *dsql_suffix_pos = strstr(hostname, DSQL_HOSTNAME_SUFFIX);
     if (!dsql_suffix_pos || (dsql_suffix_pos - hostname) != CLUSTER_ID_LENGTH) {
-        return AWS_OP_SUCCESS; /* Cluster ID not exactly 26 chars or .dsql. not found */
+        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT); /* Cluster ID not exactly 26 chars or .dsql. not found */
     }
-    
+
     /* Ensure hostname ends with ".on.aws" */
     const char *on_aws_suffix = hostname + hostname_len - strlen(DSQL_HOSTNAME_END);
     if (strcmp(on_aws_suffix, DSQL_HOSTNAME_END) != 0) {
-        return AWS_OP_SUCCESS; /* Doesn't end with .on.aws */
+        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT); /* Doesn't end with .on.aws */
     }
-    
+
     /* Extract the region between ".dsql." and ".on.aws" */
     const char *region_start = dsql_suffix_pos + strlen(DSQL_HOSTNAME_SUFFIX);
     const char *region_end = on_aws_suffix;
-    
+
     size_t region_len = region_end - region_start;
     if (region_len <= 0) {
-        return AWS_OP_SUCCESS; /* No region found */
+        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT); /* No region found */
     }
-    
+
     /* Allocate memory for the region string */
     char *region_buffer = aws_mem_calloc(allocator, 1, region_len + 1); /* +1 for null terminator */
     if (!region_buffer) {
         return aws_raise_error(AWS_ERROR_OOM);
     }
-    
+
     /* Copy the region substring */
     memcpy(region_buffer, region_start, region_len);
-    
+
     /* Create the aws_string from our buffer */
     *region_str = aws_string_new_from_c_str(allocator, region_buffer);
-    
+
     /* Free the temporary buffer */
     aws_mem_release(allocator, region_buffer);
-    
+
     if (!*region_str) {
         return aws_raise_error(AWS_ERROR_OOM);
     }
-    
+
     return AWS_OP_SUCCESS;
 }
 
@@ -289,10 +303,13 @@ int aws_dsql_auth_token_init(struct aws_allocator *allocator, struct aws_dsql_au
     return AWS_OP_SUCCESS;
 }
 
-int aws_dsql_auth_token_generate(
+/**
+ * Helper to validate token configuration.
+ * Initializes token if needed and validates config parameters.
+ */
+static int s_validate_token_config(
     struct aws_allocator *allocator,
     const struct aws_dsql_auth_config *config,
-    bool is_admin,
     struct aws_dsql_auth_token *token) {
 
     if (!token->allocator) {
@@ -315,14 +332,16 @@ int aws_dsql_auth_token_generate(
     if (!config->region) {
         return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
     }
-    
-    const char *region = config->region;
 
-    /* Get the action name based on the is_admin flag */
-    const char *action = is_admin ? ACTION_DB_CONNECT_ADMIN : ACTION_DB_CONNECT;
+    return AWS_OP_SUCCESS;
+}
 
-    /* Get the current time */
+/**
+ * Helper to get the current time from the system or configuration.
+ */
+static int s_get_current_time(const struct aws_dsql_auth_config *config, uint64_t *out_time_ms) {
     uint64_t current_time_ns = 0;
+
     if (config->system_clock_fn) {
         if (config->system_clock_fn(&current_time_ns)) {
             return AWS_OP_ERR;
@@ -333,57 +352,153 @@ int aws_dsql_auth_token_generate(
         }
     }
 
-    /* Initialize the date with the current time */
-    struct aws_date_time date_time;
-    aws_date_time_init_epoch_millis(
-        &date_time, aws_timestamp_convert(current_time_ns, AWS_TIMESTAMP_NANOS, AWS_TIMESTAMP_MILLIS, NULL));
+    /* Convert from nanoseconds to milliseconds by dividing by 1,000,000 */
+    *out_time_ms = current_time_ns / 1000000;
+    return AWS_OP_SUCCESS;
+}
 
-    /* Get credentials from the provider */
-    struct aws_credentials *credentials = NULL;
+/* Type definitions to avoid similar parameter types */
+typedef const char *action_name_t;
+typedef const char *hostname_t;
 
-    int result = s_load_credentials(config->credentials_provider, &credentials);
-    if (result != AWS_OP_SUCCESS) {
-        return result;
-    }
+/**
+ * Helper to create and configure an HTTP request for signing.
+ *
+ * @param allocator The allocator to use
+ * @param api_action The action to include in the URL query parameter
+ * @param host_name The hostname to set in the Host header
+ * @param out_request Output parameter to receive the created HTTP request
+ */
+static int s_create_http_request(
+    struct aws_allocator *allocator,
+    action_name_t api_action, /* Using type definition to avoid similar parameter types */
+    hostname_t host_name,     /* Using type definition to avoid similar parameter types */
+    struct aws_http_message **out_request) {
 
     /* Create an HTTP request for signing */
     struct aws_http_message *request = aws_http_message_new_request(allocator);
     if (!request) {
-        aws_credentials_release(credentials);
         return AWS_OP_ERR;
     }
 
     /* Set the request method to GET */
     if (aws_http_message_set_request_method(request, aws_byte_cursor_from_c_str("GET"))) {
         aws_http_message_release(request);
-        aws_credentials_release(credentials);
         return AWS_OP_ERR;
     }
 
     /* Set the request path to the URL path and query string */
     char path_buffer[1024];
-    snprintf(path_buffer, sizeof(path_buffer), "/?Action=%s", action);
+    snprintf(path_buffer, sizeof(path_buffer), "/?Action=%s", api_action);
     if (aws_http_message_set_request_path(request, aws_byte_cursor_from_c_str(path_buffer))) {
         aws_http_message_release(request);
-        aws_credentials_release(credentials);
         return AWS_OP_ERR;
     }
 
     /* Add Host header which is required for signing */
     struct aws_http_header host_header = {
-        .name = aws_byte_cursor_from_c_str("Host"), .value = aws_byte_cursor_from_c_str(config->hostname)};
+        .name = aws_byte_cursor_from_c_str("Host"), .value = aws_byte_cursor_from_c_str(host_name)};
 
     if (aws_http_message_add_header(request, host_header)) {
         aws_http_message_release(request);
-        aws_credentials_release(credentials);
         return AWS_OP_ERR;
     }
+
+    *out_request = request;
+    return AWS_OP_SUCCESS;
+}
+
+/**
+ * Helper to create and configure a signing context.
+ */
+static int s_setup_signing_context(
+    struct aws_allocator *allocator,
+    struct aws_signing_userdata *context,
+    struct aws_http_message *request) {
+
+    AWS_ZERO_STRUCT(*context);
+
+    if (aws_mutex_init(&context->mutex)) {
+        return AWS_OP_ERR;
+    }
+
+    if (aws_condition_variable_init(&context->condition_var)) {
+        aws_mutex_clean_up(&context->mutex);
+        return AWS_OP_ERR;
+    }
+
+    context->allocator = allocator;
+    context->request = request;
+
+    return AWS_OP_SUCCESS;
+}
+
+/**
+ * Helper to create a token string from a signed request.
+ */
+static int s_create_token_string(
+    struct aws_allocator *allocator,
+    const char *hostname,
+    struct aws_http_message *request,
+    struct aws_string **out_token_string) {
+
+    /* Get the signed request path */
+    struct aws_byte_cursor path_cursor;
+    if (aws_http_message_get_request_path(request, &path_cursor) != AWS_OP_SUCCESS) {
+        return AWS_OP_ERR;
+    }
+
+    /* Create the complete token string: hostname + signed path */
+    size_t hostname_len = strlen(hostname);
+    size_t path_len = path_cursor.len;
+    size_t total_len = hostname_len + path_len;
+
+    /* Create a buffer for the token string */
+    char *token_buffer = aws_mem_calloc(allocator, 1, total_len + 1); /* +1 for null terminator */
+    if (!token_buffer) {
+        return aws_raise_error(AWS_ERROR_OOM);
+    }
+
+    /* Copy hostname and path to form the complete token */
+    memcpy(token_buffer, hostname, hostname_len);
+    memcpy(token_buffer + hostname_len, path_cursor.ptr, path_len);
+
+    /* Create the aws_string from our buffer */
+    *out_token_string = aws_string_new_from_c_str(allocator, token_buffer);
+
+    /* Free the temporary buffer as it was copied into the aws_string */
+    aws_mem_release(allocator, token_buffer);
+
+    if (!*out_token_string) {
+        return aws_raise_error(AWS_ERROR_OOM);
+    }
+
+    return AWS_OP_SUCCESS;
+}
+
+/**
+ * Helper to create a signable from the request and sign it with AWS SigV4.
+ *
+ * @param allocator The allocator to use
+ * @param request The HTTP request to sign
+ * @param credentials The credentials to use for signing
+ * @param region The AWS region for signing
+ * @param expiration_in_seconds The expiration time for the signed request
+ * @param date_time The current date time for signing
+ *
+ * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
+ */
+static int s_sign_request(
+    struct aws_allocator *allocator,
+    struct aws_http_message *request,
+    struct aws_credentials *credentials,
+    const char *region,
+    uint64_t expiration_in_seconds,
+    struct aws_date_time date_time) {
 
     /* Create a signable from the request */
     struct aws_signable *signable = aws_signable_new_http_request(allocator, request);
     if (!signable) {
-        aws_http_message_release(request);
-        aws_credentials_release(credentials);
         return AWS_OP_ERR;
     }
 
@@ -393,33 +508,22 @@ int aws_dsql_auth_token_generate(
     signing_config.config_type = AWS_SIGNING_CONFIG_AWS;
     signing_config.algorithm = AWS_SIGNING_ALGORITHM_V4;
     signing_config.signature_type = AWS_ST_HTTP_REQUEST_QUERY_PARAMS;
+    /* Ensure the region is correctly converted to a byte cursor */
     signing_config.region = aws_byte_cursor_from_c_str(region);
     signing_config.service = aws_byte_cursor_from_c_str(SERVICE_NAME);
     signing_config.flags.use_double_uri_encode = false;
     signing_config.flags.should_normalize_uri_path = true;
     signing_config.credentials = credentials;
-    signing_config.expiration_in_seconds = config->expires_in;
+    signing_config.expiration_in_seconds = expiration_in_seconds;
     signing_config.date = date_time;
 
     /* Set up the signing state */
     struct aws_signing_userdata context;
-    AWS_ZERO_STRUCT(context);
-    if (aws_mutex_init(&context.mutex)) {
+    int result = s_setup_signing_context(allocator, &context, request);
+    if (result != AWS_OP_SUCCESS) {
         aws_signable_destroy(signable);
-        aws_http_message_release(request);
-        aws_credentials_release(credentials);
-        return AWS_OP_ERR;
+        return result;
     }
-
-    if (aws_condition_variable_init(&context.condition_var)) {
-        aws_mutex_clean_up(&context.mutex);
-        aws_signable_destroy(signable);
-        aws_http_message_release(request);
-        aws_credentials_release(credentials);
-        return AWS_OP_ERR;
-    }
-    context.allocator = allocator;
-    context.request = request;
 
     /* Sign the request */
     if (aws_sign_request_aws(
@@ -427,8 +531,6 @@ int aws_dsql_auth_token_generate(
         aws_condition_variable_clean_up(&context.condition_var);
         aws_mutex_clean_up(&context.mutex);
         aws_signable_destroy(signable);
-        aws_http_message_release(request);
-        aws_credentials_release(credentials);
         return AWS_OP_ERR;
     }
 
@@ -444,69 +546,86 @@ int aws_dsql_auth_token_generate(
         aws_condition_variable_clean_up(&context.condition_var);
         aws_mutex_clean_up(&context.mutex);
         aws_signable_destroy(signable);
-        aws_http_message_release(request);
-        aws_credentials_release(credentials);
         return aws_raise_error(context.signing_result_code);
     }
 
-    /* Get the signed request path */
-    struct aws_byte_cursor path_cursor;
-    if (aws_http_message_get_request_path(request, &path_cursor) != AWS_OP_SUCCESS) {
-        aws_condition_variable_clean_up(&context.condition_var);
-        aws_mutex_clean_up(&context.mutex);
-        aws_signable_destroy(signable);
-        aws_http_message_release(request);
-        aws_credentials_release(credentials);
+    /* Clean up signing resources */
+    aws_condition_variable_clean_up(&context.condition_var);
+    aws_mutex_clean_up(&context.mutex);
+    aws_signable_destroy(signable);
+
+    return AWS_OP_SUCCESS;
+}
+
+int aws_dsql_auth_token_generate(
+    struct aws_allocator *allocator,
+    const struct aws_dsql_auth_config *config,
+    bool is_admin,
+    struct aws_dsql_auth_token *token) {
+
+    int result;
+
+    /* Validate input parameters and initialize token if needed */
+    result = s_validate_token_config(allocator, config, token);
+    if (result != AWS_OP_SUCCESS) {
+        return result;
+    }
+
+    const char *region = config->region;
+    const char *action = is_admin ? ACTION_DB_CONNECT_ADMIN : ACTION_DB_CONNECT;
+
+    /* Get the current time */
+    uint64_t current_time_ms;
+    if (s_get_current_time(config, &current_time_ms) != AWS_OP_SUCCESS) {
         return AWS_OP_ERR;
     }
 
-    /* Create the complete token string: hostname + signed path */
-    size_t hostname_len = strlen(config->hostname);
-    size_t path_len = path_cursor.len;
-    size_t total_len = hostname_len + path_len;
+    /* Initialize the date with the current time */
+    struct aws_date_time date_time;
+    aws_date_time_init_epoch_millis(&date_time, current_time_ms);
 
-    /* Create a buffer for the token string */
-    char *token_buffer = aws_mem_calloc(allocator, 1, total_len + 1); /* +1 for null terminator */
-    if (!token_buffer) {
-        aws_condition_variable_clean_up(&context.condition_var);
-        aws_mutex_clean_up(&context.mutex);
-        aws_signable_destroy(signable);
-        aws_http_message_release(request);
-        aws_credentials_release(credentials);
-        return aws_raise_error(AWS_ERROR_OOM);
+    /* Get credentials from the provider */
+    struct aws_credentials *credentials = NULL;
+    result = s_load_credentials(config->credentials_provider, &credentials);
+    if (result != AWS_OP_SUCCESS) {
+        return result;
     }
 
-    /* Copy hostname and path to form the complete token */
-    memcpy(token_buffer, config->hostname, hostname_len);
-    memcpy(token_buffer + hostname_len, path_cursor.ptr, path_len);
+    /* Create an HTTP request for signing */
+    struct aws_http_message *request = NULL;
+    result = s_create_http_request(allocator, action, config->hostname, &request);
+    if (result != AWS_OP_SUCCESS) {
+        aws_credentials_release(credentials);
+        return result;
+    }
+
+    /* Create a signable and sign the request */
+    result = s_sign_request(allocator, request, credentials, region, config->expires_in, date_time);
+
+    if (result != AWS_OP_SUCCESS) {
+        aws_http_message_release(request);
+        aws_credentials_release(credentials);
+        return result;
+    }
+
+    /* Create the token string */
+    struct aws_string *token_string = NULL;
+    result = s_create_token_string(allocator, config->hostname, request, &token_string);
+
+    /* Clean up resources we no longer need */
+    aws_http_message_release(request);
+    aws_credentials_release(credentials);
+
+    if (result != AWS_OP_SUCCESS) {
+        return result;
+    }
 
     /* Clean up existing token if there is one */
     if (token->token != NULL) {
         aws_string_destroy(token->token);
-        token->token = NULL;
-    }
-    
-    /* Create the aws_string from our buffer */
-    token->token = aws_string_new_from_c_str(allocator, token_buffer);
-    
-    /* Free the temporary buffer as it was copied into the aws_string */
-    aws_mem_release(allocator, token_buffer);
-    
-    if (!token->token) {
-        aws_condition_variable_clean_up(&context.condition_var);
-        aws_mutex_clean_up(&context.mutex);
-        aws_signable_destroy(signable);
-        aws_http_message_release(request);
-        aws_credentials_release(credentials);
-        return aws_raise_error(AWS_ERROR_OOM);
     }
 
-    /* Clean up resources we no longer need */
-    aws_condition_variable_clean_up(&context.condition_var);
-    aws_mutex_clean_up(&context.mutex);
-    aws_signable_destroy(signable);
-    aws_http_message_release(request);
-    aws_credentials_release(credentials);
+    token->token = token_string;
 
     return AWS_OP_SUCCESS;
 }
@@ -515,7 +634,7 @@ void aws_dsql_auth_token_clean_up(struct aws_dsql_auth_token *token) {
     if (!token) {
         return;
     }
-    
+
     if (token->token) {
         /* Destroy the aws_string which frees both the structure and its string data */
         aws_string_destroy(token->token);
@@ -548,30 +667,44 @@ const char *aws_dsql_auth_token_get_str(const struct aws_dsql_auth_token *token)
  *
  * @return AWS_OP_SUCCESS if the region was successfully inferred and set, AWS_OP_ERR otherwise
  */
-int aws_dsql_auth_config_infer_region(
-    struct aws_allocator *allocator,
-    struct aws_dsql_auth_config *config) {
-    
+int aws_dsql_auth_config_infer_region(struct aws_allocator *allocator, struct aws_dsql_auth_config *config) {
+
     if (!config || !config->hostname) {
         return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
     }
-    
+
+    /* Free any previously owned region */
+    if (config->region_is_owned && config->region && config->allocator) {
+        aws_mem_release(config->allocator, (void*)config->region);
+        config->region = NULL;
+        config->region_is_owned = false;
+    }
+
     /* Attempt to extract the region from the hostname */
     struct aws_string *region_str = NULL;
     int result = s_extract_region_from_hostname(allocator, config->hostname, &region_str);
-    
+
     if (result != AWS_OP_SUCCESS || region_str == NULL) {
         /* Failed to extract region or hostname doesn't match expected format */
         return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
     }
+
+    /* Make a copy of the region string since we need to free the aws_string */
+    const char *region_cstr = aws_string_c_str(region_str);
+    char *region_copy = aws_mem_calloc(allocator, 1, strlen(region_cstr) + 1);
+    if (!region_copy) {
+        aws_string_destroy(region_str);
+        return aws_raise_error(AWS_ERROR_OOM);
+    }
     
-    /* Set the extracted region in the config */
-    const char *region = aws_string_c_str(region_str);
-    config->region = region;
+    strcpy(region_copy, region_cstr);
     
-    /* Note: We intentionally don't free the region_str here because the config now refers to it.
-     * The region string will be used by the config until it's cleaned up or a new region is set.
-     */
+    /* Set the extracted region in the config and mark it as owned */
+    config->region = region_copy;
+    config->region_is_owned = true;
     
+    /* Free the aws_string now that we've extracted and copied the C string */
+    aws_string_destroy(region_str);
+
     return AWS_OP_SUCCESS;
 }
