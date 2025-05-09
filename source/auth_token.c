@@ -27,12 +27,14 @@
 /* Hostname format: <cluster-id>.dsql.<region>.on.aws, where cluster-id is 26 chars */
 #define DSQL_HOSTNAME_SUFFIX ".dsql."
 #define DSQL_HOSTNAME_END ".on.aws"
-#define CLUSTER_ID_LENGTH 26
+
+enum { CLUSTER_ID_LENGTH = 26 };
 
 #define ACTION_DB_CONNECT "DbConnect"
 #define ACTION_DB_CONNECT_ADMIN "DbConnectAdmin"
 #define SERVICE_NAME "dsql"
-#define DEFAULT_EXPIRES_IN 900
+
+enum { DEFAULT_EXPIRES_IN = 900 };
 
 int aws_dsql_auth_config_init(struct aws_dsql_auth_config *config) {
     AWS_ZERO_STRUCT(*config);
@@ -53,15 +55,12 @@ void aws_dsql_auth_config_clean_up(struct aws_dsql_auth_config *config) {
     AWS_ZERO_STRUCT(*config);
 }
 
-int aws_dsql_auth_config_set_hostname(struct aws_dsql_auth_config *config, const char *hostname) {
-
+void aws_dsql_auth_config_set_hostname(struct aws_dsql_auth_config *config, const char *hostname) {
     config->hostname = hostname;
-    return AWS_OP_SUCCESS;
 }
 
-int aws_dsql_auth_config_set_region(struct aws_dsql_auth_config *config, struct aws_string *region) {
+void aws_dsql_auth_config_set_region(struct aws_dsql_auth_config *config, struct aws_string *region) {
     config->region = region;
-    return AWS_OP_SUCCESS;
 }
 
 void aws_dsql_auth_config_set_expires_in(struct aws_dsql_auth_config *config, uint64_t expires_in) {
@@ -124,6 +123,52 @@ struct aws_credentials_callback_state {
     int error_code;
     bool is_complete;
 };
+
+/**
+ * Initialize a credentials callback state.
+ *
+ * @param[out] state The state to initialize
+ *
+ * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
+ */
+static int s_aws_credentials_callback_state_init(struct aws_credentials_callback_state *state) {
+    AWS_ZERO_STRUCT(*state);
+
+    if (aws_mutex_init(&state->mutex)) {
+        return AWS_OP_ERR;
+    }
+
+    if (aws_condition_variable_init(&state->condition_var)) {
+        aws_mutex_clean_up(&state->mutex);
+        return AWS_OP_ERR;
+    }
+
+    state->credentials = NULL;
+    state->error_code = 0;
+    state->is_complete = false;
+
+    return AWS_OP_SUCCESS;
+}
+
+/**
+ * Clean up resources associated with a credentials callback state.
+ *
+ * @param[in] state The state to clean up
+ */
+static void s_aws_credentials_callback_state_clean_up(struct aws_credentials_callback_state *state) {
+    if (!state) {
+        return;
+    }
+
+    if (state->credentials) {
+        aws_credentials_release(state->credentials);
+    }
+
+    aws_condition_variable_clean_up(&state->condition_var);
+    aws_mutex_clean_up(&state->mutex);
+    
+    AWS_ZERO_STRUCT(*state);
+}
 
 /* Callback for when credentials are retrieved */
 static void s_on_get_credentials_complete(struct aws_credentials *credentials, int error_code, void *userdata) {
@@ -227,20 +272,12 @@ static int s_load_credentials(
     struct aws_credentials **out_credentials) {
 
     struct aws_credentials_callback_state creds_state;
-    AWS_ZERO_STRUCT(creds_state);
-
-    if (aws_mutex_init(&creds_state.mutex)) {
-        return AWS_OP_ERR;
-    }
-
-    if (aws_condition_variable_init(&creds_state.condition_var)) {
-        aws_mutex_clean_up(&creds_state.mutex);
+    if (s_aws_credentials_callback_state_init(&creds_state) != AWS_OP_SUCCESS) {
         return AWS_OP_ERR;
     }
 
     if (aws_credentials_provider_get_credentials(credentials_provider, s_on_get_credentials_complete, &creds_state)) {
-        aws_condition_variable_clean_up(&creds_state.condition_var);
-        aws_mutex_clean_up(&creds_state.mutex);
+        s_aws_credentials_callback_state_clean_up(&creds_state);
         return AWS_OP_ERR;
     }
 
@@ -255,16 +292,15 @@ static int s_load_credentials(
     /* Check if credentials were successfully retrieved */
     if (creds_state.error_code != AWS_ERROR_SUCCESS || !creds_state.credentials) {
         int error_code = creds_state.error_code ? creds_state.error_code : AWS_ERROR_INVALID_STATE;
-        aws_condition_variable_clean_up(&creds_state.condition_var);
-        aws_mutex_clean_up(&creds_state.mutex);
+        s_aws_credentials_callback_state_clean_up(&creds_state);
         return aws_raise_error(error_code);
     }
 
     *out_credentials = creds_state.credentials;
+    creds_state.credentials = NULL; /* Transfer ownership to out_credentials */
 
     /* Clean up resources, but don't release the credentials as they're now owned by the caller */
-    aws_condition_variable_clean_up(&creds_state.condition_var);
-    aws_mutex_clean_up(&creds_state.mutex);
+    s_aws_credentials_callback_state_clean_up(&creds_state);
 
     return AWS_OP_SUCCESS;
 }
@@ -364,13 +400,19 @@ static int s_create_http_request(
 }
 
 /**
- * Helper to create and configure a signing context.
+ * Initialize a signing userdata context.
+ *
+ * @param[in] allocator The allocator to use
+ * @param[out] context The context to initialize
+ * @param[in] request The HTTP request to associate with this context
+ *
+ * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
  */
-static int s_setup_signing_context(
+static int s_aws_signing_userdata_init(
     struct aws_allocator *allocator,
     struct aws_signing_userdata *context,
     struct aws_http_message *request) {
-
+    
     AWS_ZERO_STRUCT(*context);
 
     if (aws_mutex_init(&context->mutex)) {
@@ -384,8 +426,28 @@ static int s_setup_signing_context(
 
     context->allocator = allocator;
     context->request = request;
+    context->signing_result_code = 0;
+    context->is_signing_complete = false;
 
     return AWS_OP_SUCCESS;
+}
+
+/**
+ * Clean up resources associated with a signing userdata context.
+ *
+ * @param[in] context The context to clean up
+ */
+static void s_aws_signing_userdata_clean_up(struct aws_signing_userdata *context) {
+    if (!context) {
+        return;
+    }
+
+    aws_condition_variable_clean_up(&context->condition_var);
+    aws_mutex_clean_up(&context->mutex);
+    
+    /* Note: We don't release the request here as that's managed by the caller */
+    
+    AWS_ZERO_STRUCT(*context);
 }
 
 /**
@@ -474,7 +536,7 @@ static int s_sign_request(
 
     /* Set up the signing state */
     struct aws_signing_userdata context;
-    int result = s_setup_signing_context(allocator, &context, request);
+    int result = s_aws_signing_userdata_init(allocator, &context, request);
     if (result != AWS_OP_SUCCESS) {
         aws_signable_destroy(signable);
         return result;
@@ -483,8 +545,7 @@ static int s_sign_request(
     /* Sign the request */
     if (aws_sign_request_aws(
             allocator, signable, (struct aws_signing_config_base *)&signing_config, s_on_signing_complete, &context)) {
-        aws_condition_variable_clean_up(&context.condition_var);
-        aws_mutex_clean_up(&context.mutex);
+        s_aws_signing_userdata_clean_up(&context);
         aws_signable_destroy(signable);
         return AWS_OP_ERR;
     }
@@ -498,15 +559,13 @@ static int s_sign_request(
 
     /* Check if signing was successful */
     if (context.signing_result_code != AWS_ERROR_SUCCESS) {
-        aws_condition_variable_clean_up(&context.condition_var);
-        aws_mutex_clean_up(&context.mutex);
+        s_aws_signing_userdata_clean_up(&context);
         aws_signable_destroy(signable);
         return aws_raise_error(context.signing_result_code);
     }
 
     /* Clean up signing resources */
-    aws_condition_variable_clean_up(&context.condition_var);
-    aws_mutex_clean_up(&context.mutex);
+    s_aws_signing_userdata_clean_up(&context);
     aws_signable_destroy(signable);
 
     return AWS_OP_SUCCESS;

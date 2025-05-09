@@ -21,8 +21,8 @@
 
 struct dsql_token_ctx {
     struct aws_allocator *allocator;
-    const struct aws_string *hostname;
-    const struct aws_string *region;
+    struct aws_string *hostname;
+    struct aws_string *region;
     uint64_t expires_in;
     bool admin;
 };
@@ -39,21 +39,12 @@ static void s_usage(int exit_code) {
     exit(exit_code);
 }
 
-/* Define constants for command line arguments if they're not already defined */
-#ifndef required_argument
-#    define required_argument 1
-#endif
-
-#ifndef no_argument
-#    define no_argument 0
-#endif
-
 static struct aws_cli_option s_long_options[] = {
-    {"hostname", required_argument, NULL, 'h'},
-    {"region", required_argument, NULL, 'r'},
-    {"expires-in", required_argument, NULL, 'e'},
-    {"admin", no_argument, NULL, 'a'},
-    {"help", no_argument, NULL, '?'},
+    {"hostname", AWS_CLI_OPTIONS_REQUIRED_ARGUMENT, NULL, 'h'},
+    {"region", AWS_CLI_OPTIONS_REQUIRED_ARGUMENT, NULL, 'r'},
+    {"expires-in", AWS_CLI_OPTIONS_REQUIRED_ARGUMENT, NULL, 'e'},
+    {"admin", AWS_CLI_OPTIONS_NO_ARGUMENT, NULL, 'a'},
+    {"help", AWS_CLI_OPTIONS_NO_ARGUMENT, NULL, '?'},
     {NULL, 0, NULL, 0},
 };
 
@@ -142,11 +133,11 @@ int main(int argc, char **argv) {
 
     /* Set region if provided, otherwise try to infer from hostname */
     if (ctx.region) {
-        auth_config.region = ctx.region;
+        aws_dsql_auth_config_set_region(&auth_config, ctx.region);
     } else {
         /* Try to infer region from hostname */
         struct aws_string *inferred_region = NULL;
-        if (aws_dsql_auth_config_infer_region(allocator, &auth_config, &inferred_region) != AWS_OP_SUCCESS || 
+        if (aws_dsql_auth_config_infer_region(allocator, &auth_config, &inferred_region) != AWS_OP_SUCCESS ||
             inferred_region == NULL) {
             fprintf(
                 stderr,
@@ -154,10 +145,10 @@ int main(int argc, char **argv) {
             result = AWS_OP_ERR;
             goto cleanup;
         }
-        
+
         /* Store the inferred region in the config */
         auth_config.region = inferred_region;
-        
+
         /* Remember to free the region later */
         ctx.region = inferred_region;
     }

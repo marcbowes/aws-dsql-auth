@@ -59,7 +59,7 @@ static int s_setup_auth_config(
     uint64_t expires_in) {
 
     ASSERT_SUCCESS(aws_dsql_auth_config_init(config));
-    ASSERT_SUCCESS(aws_dsql_auth_config_set_hostname(config, aws_string_c_str(s_hostname)));
+    aws_dsql_auth_config_set_hostname(config, aws_string_c_str(s_hostname));
     config->region = s_region; /* Set region directly */
     aws_dsql_auth_config_set_expires_in(config, expires_in);
     aws_dsql_auth_config_set_credentials_provider(config, credentials_provider);
@@ -186,7 +186,7 @@ static int s_aws_dsql_auth_region_detection_test(struct aws_allocator *allocator
 
     /* Use a hostname with the expected format: <cluster-id>.dsql.<region>.on.aws */
     const char *test_hostname = "24abtvxzzxzrrfaxyduobmpfea.dsql.us-east-1.on.aws";
-    ASSERT_SUCCESS(aws_dsql_auth_config_set_hostname(&config, test_hostname));
+    aws_dsql_auth_config_set_hostname(&config, test_hostname);
 
     /* Infer the region from the hostname */
     struct aws_string *region_str = NULL;
@@ -195,10 +195,10 @@ static int s_aws_dsql_auth_region_detection_test(struct aws_allocator *allocator
     /* Verify the region was correctly inferred */
     ASSERT_NOT_NULL(region_str);
     ASSERT_TRUE(aws_string_eq_c_str(region_str, "us-east-1"));
-    
+
     /* Set the region in the config */
     config.region = region_str;
-    
+
     aws_dsql_auth_config_set_expires_in(&config, 450);
     aws_dsql_auth_config_set_credentials_provider(&config, credentials_provider);
 
@@ -257,7 +257,7 @@ static int s_aws_dsql_auth_region_inference_invalid_hostname_test(struct aws_all
 
     for (size_t i = 0; i < sizeof(invalid_hostnames) / sizeof(invalid_hostnames[0]); i++) {
         /* Set up config with invalid hostname */
-        ASSERT_SUCCESS(aws_dsql_auth_config_set_hostname(&config, invalid_hostnames[i]));
+        aws_dsql_auth_config_set_hostname(&config, invalid_hostnames[i]);
 
         /* Attempt to infer region - should fail because hostname format is invalid */
         struct aws_string *region_str = NULL;

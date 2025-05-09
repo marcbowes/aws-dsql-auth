@@ -84,24 +84,18 @@ AWS_DSQL_AUTH_API void aws_dsql_auth_config_clean_up(struct aws_dsql_auth_config
 /**
  * Set the hostname for the auth token config.
  *
- * @param[in] allocator The allocator to use for memory allocation
  * @param[in,out] config The config to modify
  * @param[in] hostname The hostname to set
- *
- * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
  */
-AWS_DSQL_AUTH_API int aws_dsql_auth_config_set_hostname(struct aws_dsql_auth_config *config, const char *hostname);
+AWS_DSQL_AUTH_API void aws_dsql_auth_config_set_hostname(struct aws_dsql_auth_config *config, const char *hostname);
 
 /**
  * Set the region for the auth token config.
  *
- * @param[in] allocator The allocator to use for memory allocation
  * @param[in,out] config The config to modify
  * @param[in] region The region to set
- *
- * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
  */
-AWS_DSQL_AUTH_API int aws_dsql_auth_config_set_region(struct aws_dsql_auth_config *config, struct aws_string *region);
+AWS_DSQL_AUTH_API void aws_dsql_auth_config_set_region(struct aws_dsql_auth_config *config, struct aws_string *region);
 
 /**
  * Try to infer the region from the hostname and set it in the config if successful.
