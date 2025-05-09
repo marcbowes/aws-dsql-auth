@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04, ubuntu-22.04, macos-12, macos-13, macos-14]
+        os: [ubuntu-22.04, macos-15]
     
     steps:
     - name: Checkout Code
