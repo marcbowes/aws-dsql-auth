@@ -9,8 +9,15 @@
 #include <aws/auth/signing.h>
 #include <aws/auth/signing_config.h>
 #include <aws/common/string.h>
+#include <aws/common/mutex.h>
+#include <aws/common/condition_variable.h>
 #include <aws/http/request_response.h>
 #include <aws/io/uri.h>
+
+/* Forward declarations for functions not in headers */
+AWS_STATIC_IMPL struct aws_string *aws_string_new_format(struct aws_allocator *allocator, const char *fmt, ...);
+AWS_STATIC_IMPL int aws_apply_signing_result_to_http_request(struct aws_http_message *request, struct aws_allocator *allocator, const struct aws_signing_result *result);
+AWS_STATIC_IMPL void aws_signing_result_destroy(struct aws_signing_result *result);
 
 #define ACTION_DB_CONNECT "DbConnect"
 #define ACTION_DB_CONNECT_ADMIN "DbConnectAdmin"
@@ -74,6 +81,35 @@ void aws_dsql_auth_config_set_credentials(
     if (credentials) {
         aws_credentials_acquire(credentials);
     }
+}
+
+/* Structure to hold signing state */
+struct aws_signing_state {
+    struct aws_mutex mutex;
+    struct aws_condition_variable condition_var;
+    struct aws_signing_result *signing_result;
+    int signing_result_code;
+    bool is_signing_complete;
+};
+
+/* Callback for when signing is complete */
+static void on_signing_complete(struct aws_signing_result *result, int error_code, void *userdata) {
+    struct aws_signing_state *state = (struct aws_signing_state *)userdata;
+    aws_mutex_lock(&state->mutex);
+    
+    /* Store the result in the userdata */
+    state->signing_result = result;
+    state->signing_result_code = error_code;
+    state->is_signing_complete = true;
+    
+    aws_condition_variable_notify_one(&state->condition_var);
+    aws_mutex_unlock(&state->mutex);
+}
+
+/* Helper function for condition variable predicate */
+bool aws_is_signing_complete(void *userdata) {
+    struct aws_signing_state *state = (struct aws_signing_state *)userdata;
+    return state->is_signing_complete;
 }
 
 int aws_dsql_auth_token_generate(
@@ -149,37 +185,22 @@ int aws_dsql_auth_token_generate(
     struct aws_signing_result *signing_result = NULL;
     
     /* Use the async signing API with a synchronous wait */
-    struct aws_mutex mutex;
-    if (aws_mutex_init(&mutex)) {
+    struct aws_signing_state state;
+    AWS_ZERO_STRUCT(state);
+    
+    if (aws_mutex_init(&state.mutex)) {
         aws_string_destroy(url);
         aws_http_message_release(request);
         aws_signable_destroy(signable);
         return AWS_OP_ERR;
     }
     
-    struct aws_condition_variable condition_var;
-    if (aws_condition_variable_init(&condition_var)) {
-        aws_mutex_clean_up(&mutex);
+    if (aws_condition_variable_init(&state.condition_var)) {
+        aws_mutex_clean_up(&state.mutex);
         aws_string_destroy(url);
         aws_http_message_release(request);
         aws_signable_destroy(signable);
         return AWS_OP_ERR;
-    }
-    
-    bool is_signing_complete = false;
-    int signing_result_code = 0;
-    
-    /* Callback for when signing is complete */
-    void on_signing_complete(struct aws_signing_result *result, int error_code, void *userdata) {
-        struct aws_mutex *mutex_ptr = userdata;
-        aws_mutex_lock(mutex_ptr);
-        
-        signing_result = result;
-        signing_result_code = error_code;
-        is_signing_complete = true;
-        
-        aws_condition_variable_notify_one(&condition_var);
-        aws_mutex_unlock(mutex_ptr);
     }
     
     /* Start the signing process */
@@ -188,9 +209,9 @@ int aws_dsql_auth_token_generate(
             signable, 
             (struct aws_signing_config_base *)&signing_config, 
             on_signing_complete, 
-            &mutex)) {
-        aws_condition_variable_clean_up(&condition_var);
-        aws_mutex_clean_up(&mutex);
+            &state)) {
+        aws_condition_variable_clean_up(&state.condition_var);
+        aws_mutex_clean_up(&state.mutex);
         aws_string_destroy(url);
         aws_http_message_release(request);
         aws_signable_destroy(signable);
@@ -198,18 +219,22 @@ int aws_dsql_auth_token_generate(
     }
     
     /* Wait for signing to complete */
-    aws_mutex_lock(&mutex);
-    while (!is_signing_complete) {
+    aws_mutex_lock(&state.mutex);
+    while (!state.is_signing_complete) {
         aws_condition_variable_wait_pred(
-            &condition_var, 
-            &mutex, 
+            &state.condition_var, 
+            &state.mutex, 
             aws_is_signing_complete, 
-            &is_signing_complete);
+            &state);
     }
-    aws_mutex_unlock(&mutex);
+    aws_mutex_unlock(&state.mutex);
     
-    aws_condition_variable_clean_up(&condition_var);
-    aws_mutex_clean_up(&mutex);
+    aws_condition_variable_clean_up(&state.condition_var);
+    aws_mutex_clean_up(&state.mutex);
+    
+    /* Get the signing result from the state */
+    signing_result = state.signing_result;
+    int signing_result_code = state.signing_result_code;
     
     /* Check if signing was successful */
     if (signing_result_code || !signing_result) {
@@ -279,9 +304,4 @@ const char *aws_dsql_auth_token_get_str(
     const struct aws_dsql_auth_token *token) {
     
     return token->token;
-}
-
-/* Helper function for condition variable predicate */
-bool aws_is_signing_complete(void *userdata) {
-    return *(bool *)userdata;
 }

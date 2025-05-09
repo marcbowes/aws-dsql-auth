@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(aws-dsql-auth C)
 
+# Set the path to the AWS common cmake modules
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/aws-sdk/aws-c-common/cmake")
+
 # Build AWS C libraries in the correct order
 add_subdirectory(aws-sdk/aws-c-common)
 add_subdirectory(aws-sdk/aws-c-cal)
@@ -9,9 +12,6 @@ add_subdirectory(aws-sdk/aws-c-compression)
 add_subdirectory(aws-sdk/aws-c-http)
 add_subdirectory(aws-sdk/aws-c-sdkutils)
 add_subdirectory(aws-sdk/aws-c-auth)
-
-# Set the path to the AWS common cmake modules
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/aws-sdk/aws-c-common/cmake")
 
 # Include AWS common cmake modules
 include(AwsCFlags)
