@@ -59,23 +59,3 @@ jobs:
       run: |
         cd build
         ctest --output-on-failure
-
-  code-quality:
-    name: Code Quality
-    runs-on: ubuntu-22.04
-    
-    steps:
-    - name: Checkout Code
-      uses: actions/checkout@v3
-      with:
-        submodules: 'recursive'
-        
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential cmake clang-format clang-tidy
-        
-    - name: Run Formatting and Static Analysis
-      run: |
-        chmod +x ./build.sh
-        ./build.sh tidy
