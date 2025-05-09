@@ -1,0 +1,81 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Build and Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-20.04, ubuntu-22.04, macos-12, macos-13, macos-14]
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+      with:
+        submodules: 'recursive'
+
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v1.14
+      with:
+        cmake-version: '3.20.x'
+
+    - name: Install Dependencies (Ubuntu)
+      if: startsWith(matrix.os, 'ubuntu')
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libssl-dev
+
+    - name: Install Dependencies (macOS)
+      if: startsWith(matrix.os, 'macos')
+      run: |
+        brew install openssl@3
+        echo 'export OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)' >> $GITHUB_ENV
+        echo 'export LDFLAGS="-L$(brew --prefix openssl@3)/lib"' >> $GITHUB_ENV
+        echo 'export CPPFLAGS="-I$(brew --prefix openssl@3)/include"' >> $GITHUB_ENV
+
+    - name: Cache Build Directory
+      uses: actions/cache@v3
+      with:
+        path: |
+          build
+          aws-sdk/*/build
+        key: ${{ runner.os }}-cmake-${{ hashFiles('**/*.c', '**/*.h', 'CMakeLists.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-cmake-
+
+    - name: Build
+      run: |
+        chmod +x ./build.sh
+        ./build.sh
+
+    - name: Run Tests
+      run: |
+        cd build
+        ctest --output-on-failure
+
+  code-quality:
+    name: Code Quality
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+      with:
+        submodules: 'recursive'
+        
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake clang-format clang-tidy
+        
+    - name: Run Formatting and Static Analysis
+      run: |
+        chmod +x ./build.sh
+        ./build.sh tidy
