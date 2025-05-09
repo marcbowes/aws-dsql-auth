@@ -31,14 +31,6 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential pkg-config libssl-dev
-        
-        # Verify OpenSSL installation
-        pkg-config --modversion openssl
-        pkg-config --libs openssl
-        pkg-config --cflags openssl
-        
-        # Export pkgconfig variables that will be used during build
-        echo "PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig" >> $GITHUB_ENV
 
     - name: Install Dependencies (macOS)
       if: startsWith(matrix.os, 'macos')
@@ -60,37 +52,8 @@ jobs:
     - name: Build (Ubuntu)
       if: startsWith(matrix.os, 'ubuntu')
       run: |
-        # Verify OpenSSL can be found with pkg-config
-        pkg-config --modversion openssl
-        pkg-config --libs openssl
-        pkg-config --cflags openssl
-        
-        # Get OpenSSL library and include paths from pkg-config
-        OPENSSL_LIBS=$(pkg-config --libs openssl)
-        OPENSSL_CFLAGS=$(pkg-config --cflags openssl)
-        
-        # Export for CMake
-        export OPENSSL_ROOT_DIR=/usr
-        export OPENSSL_INCLUDE_DIR=/usr/include/openssl
-        export OPENSSL_CRYPTO_LIBRARY=/usr/lib/x86_64-linux-gnu/libcrypto.so
-        export OPENSSL_SSL_LIBRARY=/usr/lib/x86_64-linux-gnu/libssl.so
-        
-        # Create build directory
-        mkdir -p build
-        cd build
-        
-        # Run CMake with pkg-config environment
-        CMAKE_PREFIX_PATH=/usr \
-        PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig \
-        cmake -DIN_SOURCE_BUILD=ON \
-              -DOPENSSL_ROOT_DIR=/usr \
-              -DCMAKE_PREFIX_PATH=/usr \
-              -DCMAKE_C_FLAGS="$(pkg-config --cflags openssl)" \
-              -DCMAKE_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu \
-              -DCMAKE_FIND_LIBRARY_SUFFIXES=".so" \
-              -DCMAKE_VERBOSE_MAKEFILE=ON ..
-        
-        make -j4 VERBOSE=1
+        chmod +x ./build.sh
+        ./build.sh
 
     - name: Build (macOS)
       if: startsWith(matrix.os, 'macos')
