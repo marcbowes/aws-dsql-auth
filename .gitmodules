@@ -1,0 +1,21 @@
+[submodule "aws-sdk/aws-c-common"]
+	path = aws-sdk/aws-c-common
+	url = https://github.com/awslabs/aws-c-common.git
+[submodule "aws-sdk/aws-c-cal"]
+	path = aws-sdk/aws-c-cal
+	url = https://github.com/awslabs/aws-c-cal.git
+[submodule "aws-sdk/aws-c-io"]
+	path = aws-sdk/aws-c-io
+	url = https://github.com/awslabs/aws-c-io.git
+[submodule "aws-sdk/aws-c-compression"]
+	path = aws-sdk/aws-c-compression
+	url = https://github.com/awslabs/aws-c-compression.git
+[submodule "aws-sdk/aws-c-http"]
+	path = aws-sdk/aws-c-http
+	url = https://github.com/awslabs/aws-c-http.git
+[submodule "aws-sdk/aws-c-sdkutils"]
+	path = aws-sdk/aws-c-sdkutils
+	url = https://github.com/awslabs/aws-c-sdkutils.git
+[submodule "aws-sdk/aws-c-auth"]
+	path = aws-sdk/aws-c-auth
+	url = https://github.com/awslabs/aws-c-auth.git
