@@ -4,6 +4,9 @@ project(aws-dsql-auth C)
 # Set the path to the AWS common cmake modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/aws-sdk/aws-c-common/cmake")
 
+# Disable tests in dependencies
+set(BUILD_TESTING OFF CACHE BOOL "Disable tests in dependencies" FORCE)
+
 # Build AWS C libraries in the correct order
 add_subdirectory(aws-sdk/aws-c-common)
 add_subdirectory(aws-sdk/aws-c-cal)
@@ -12,6 +15,9 @@ add_subdirectory(aws-sdk/aws-c-compression)
 add_subdirectory(aws-sdk/aws-c-http)
 add_subdirectory(aws-sdk/aws-c-sdkutils)
 add_subdirectory(aws-sdk/aws-c-auth)
+
+# Re-enable tests for our project
+set(BUILD_TESTING ON CACHE BOOL "Enable tests for our project" FORCE)
 
 # Include AWS common cmake modules
 include(AwsCFlags)
@@ -23,8 +29,9 @@ file(GLOB AWS_DSQL_AUTH_HEADERS
     "include/aws/dsql-auth/*.h"
 )
 
-file(GLOB AWS_DSQL_AUTH_SRC
-    "source/*.c"
+# Explicitly list source files instead of using GLOB to exclude dsql_token.c
+set(AWS_DSQL_AUTH_SRC
+    "source/auth_token.c"
 )
 
 add_library(${PROJECT_NAME} ${AWS_DSQL_AUTH_SRC})
@@ -67,5 +74,33 @@ install(
     NAMESPACE AWS::
 )
 
-# Add tests
-# add_subdirectory(tests)
+# Enable CTest
+include(CTest)
+
+# Add tests if testing is enabled
+if (BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
+
+# Create the dsql-token executable
+add_executable(dsql-token source/dsql_token.c)
+
+# Set compiler options for dsql-token
+aws_set_common_properties(dsql-token)
+
+# Link against the aws-dsql-auth library and other dependencies
+target_link_libraries(dsql-token PRIVATE
+    ${PROJECT_NAME}
+    aws-c-auth
+    aws-c-common
+    aws-c-cal
+    aws-c-io
+    aws-c-http
+    aws-c-sdkutils
+)
+
+# Install the dsql-token executable
+install(
+    TARGETS dsql-token
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
