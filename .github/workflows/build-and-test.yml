@@ -30,14 +30,12 @@ jobs:
       if: startsWith(matrix.os, 'ubuntu')
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential pkg-config libssl-dev
+        sudo apt-get install -y build-essential pkg-config libssl-dev git
 
     - name: Install Dependencies (macOS)
       if: startsWith(matrix.os, 'macos')
       run: |
         brew install openssl@3 pkg-config
-        echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> $GITHUB_ENV
-        echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig:$PKG_CONFIG_PATH" >> $GITHUB_ENV
 
     - name: Cache Build Directory
       uses: actions/cache@v3
@@ -45,23 +43,13 @@ jobs:
         path: |
           build
           aws-sdk/*/build
+          aws-lc
+          aws-lc-install
         key: ${{ runner.os }}-cmake-${{ hashFiles('**/*.c', '**/*.h', 'CMakeLists.txt') }}
         restore-keys: |
           ${{ runner.os }}-cmake-
 
-    - name: Build (Ubuntu)
-      if: startsWith(matrix.os, 'ubuntu')
+    - name: Build and Test
       run: |
         chmod +x ./build.sh
         ./build.sh
-
-    - name: Build (macOS)
-      if: startsWith(matrix.os, 'macos')
-      run: |
-        chmod +x ./build.sh
-        ./build.sh
-
-    - name: Run Tests
-      run: |
-        cd build
-        ctest --output-on-failure
