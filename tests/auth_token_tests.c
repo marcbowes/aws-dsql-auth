@@ -30,22 +30,6 @@ void mock_aws_set_system_time(uint64_t current_time) {
     aws_mutex_unlock(&system_clock_sync);
 }
 
-static struct aws_mutex high_res_clock_sync = AWS_MUTEX_INIT;
-static uint64_t high_res_clock_time = 0;
-
-int mock_aws_get_high_res_time(uint64_t *current_time) {
-    aws_mutex_lock(&high_res_clock_sync);
-    *current_time = high_res_clock_time;
-    aws_mutex_unlock(&high_res_clock_sync);
-    return AWS_OP_SUCCESS;
-}
-
-void mock_aws_set_high_res_time(uint64_t current_time) {
-    aws_mutex_lock(&high_res_clock_sync);
-    high_res_clock_time = current_time;
-    aws_mutex_unlock(&high_res_clock_sync);
-}
-
 /* Test constants */
 AWS_STATIC_STRING_FROM_LITERAL(s_access_key_id, "akid");
 AWS_STATIC_STRING_FROM_LITERAL(s_secret_access_key, "secret");
@@ -74,14 +58,13 @@ static int s_setup_auth_config(
     struct aws_credentials_provider *credentials_provider,
     uint64_t expires_in) {
 
-    ASSERT_SUCCESS(aws_dsql_auth_config_init(allocator, config));
-    ASSERT_SUCCESS(aws_dsql_auth_config_set_hostname(allocator, config, aws_string_c_str(s_hostname)));
-    ASSERT_SUCCESS(aws_dsql_auth_config_set_region(allocator, config, aws_string_c_str(s_region)));
+    ASSERT_SUCCESS(aws_dsql_auth_config_init(config));
+    ASSERT_SUCCESS(aws_dsql_auth_config_set_hostname(config, aws_string_c_str(s_hostname)));
+    config->region = s_region; /* Set region directly */
     aws_dsql_auth_config_set_expires_in(config, expires_in);
     aws_dsql_auth_config_set_credentials_provider(config, credentials_provider);
 
     /* Set the mock time functions */
-    config->high_res_clock_fn = mock_aws_get_high_res_time;
     config->system_clock_fn = mock_aws_get_system_time;
 
     return AWS_OP_SUCCESS;
@@ -97,8 +80,7 @@ static int s_aws_dsql_auth_signing_works_test(struct aws_allocator *allocator, v
     aws_auth_library_init(allocator);
 
     /* Set the mock time to August 27, 2024 at 00:00:00 UTC (1724716800 seconds since Unix epoch) */
-    mock_aws_set_system_time(1724716800ULL * 1000000000ULL);   /* Convert to nanoseconds */
-    mock_aws_set_high_res_time(1724716800ULL * 1000000000ULL); /* Convert to nanoseconds */
+    mock_aws_set_system_time(1724716800ULL * 1000000000ULL); /* Convert to nanoseconds */
 
     /* Create credentials provider */
     struct aws_credentials_provider *credentials_provider = s_create_test_credentials_provider(allocator);
@@ -108,10 +90,9 @@ static int s_aws_dsql_auth_signing_works_test(struct aws_allocator *allocator, v
     struct aws_dsql_auth_config config;
     ASSERT_SUCCESS(s_setup_auth_config(allocator, &config, credentials_provider, 450));
 
-    /* Initialize and generate auth token */
-    struct aws_dsql_auth_token token;
-    ASSERT_SUCCESS(aws_dsql_auth_token_init(allocator, &token));
-    ASSERT_SUCCESS(aws_dsql_auth_token_generate(allocator, &config, false, &token));
+    /* Generate auth token */
+    struct aws_dsql_auth_token token = {0}; /* Zero-initialize */
+    ASSERT_SUCCESS(aws_dsql_auth_token_generate(&config, false, allocator, &token));
 
     /* Verify token */
     const char *token_str = aws_dsql_auth_token_get_str(&token);
@@ -146,8 +127,7 @@ static int s_aws_dsql_auth_signing_works_admin_test(struct aws_allocator *alloca
     aws_auth_library_init(allocator);
 
     /* Set the mock time to August 27, 2024 at 00:00:00 UTC (1724716800 seconds since Unix epoch) */
-    mock_aws_set_system_time(1724716800ULL * 1000000000ULL);   /* Convert to nanoseconds */
-    mock_aws_set_high_res_time(1724716800ULL * 1000000000ULL); /* Convert to nanoseconds */
+    mock_aws_set_system_time(1724716800ULL * 1000000000ULL); /* Convert to nanoseconds */
 
     /* Create credentials provider */
     struct aws_credentials_provider *credentials_provider = s_create_test_credentials_provider(allocator);
@@ -157,10 +137,9 @@ static int s_aws_dsql_auth_signing_works_admin_test(struct aws_allocator *alloca
     struct aws_dsql_auth_config config;
     ASSERT_SUCCESS(s_setup_auth_config(allocator, &config, credentials_provider, 450));
 
-    /* Initialize and generate admin auth token */
-    struct aws_dsql_auth_token token;
-    ASSERT_SUCCESS(aws_dsql_auth_token_init(allocator, &token));
-    ASSERT_SUCCESS(aws_dsql_auth_token_generate(allocator, &config, true, &token));
+    /* Generate admin auth token */
+    struct aws_dsql_auth_token token = {0}; /* Zero-initialize */
+    ASSERT_SUCCESS(aws_dsql_auth_token_generate(&config, true, allocator, &token));
 
     /* Verify token */
     const char *token_str = aws_dsql_auth_token_get_str(&token);
@@ -195,8 +174,7 @@ static int s_aws_dsql_auth_region_detection_test(struct aws_allocator *allocator
     aws_auth_library_init(allocator);
 
     /* Set the mock time to August 27, 2024 at 00:00:00 UTC (1724716800 seconds since Unix epoch) */
-    mock_aws_set_system_time(1724716800ULL * 1000000000ULL);   /* Convert to nanoseconds */
-    mock_aws_set_high_res_time(1724716800ULL * 1000000000ULL); /* Convert to nanoseconds */
+    mock_aws_set_system_time(1724716800ULL * 1000000000ULL); /* Convert to nanoseconds */
 
     /* Create credentials provider */
     struct aws_credentials_provider *credentials_provider = s_create_test_credentials_provider(allocator);
@@ -204,30 +182,32 @@ static int s_aws_dsql_auth_region_detection_test(struct aws_allocator *allocator
 
     /* Set up auth config but don't set region - we'll infer it from hostname */
     struct aws_dsql_auth_config config;
-    ASSERT_SUCCESS(aws_dsql_auth_config_init(allocator, &config));
+    ASSERT_SUCCESS(aws_dsql_auth_config_init(&config));
 
     /* Use a hostname with the expected format: <cluster-id>.dsql.<region>.on.aws */
     const char *test_hostname = "24abtvxzzxzrrfaxyduobmpfea.dsql.us-east-1.on.aws";
-    ASSERT_SUCCESS(aws_dsql_auth_config_set_hostname(allocator, &config, test_hostname));
+    ASSERT_SUCCESS(aws_dsql_auth_config_set_hostname(&config, test_hostname));
 
     /* Infer the region from the hostname */
-    ASSERT_SUCCESS(aws_dsql_auth_config_infer_region(allocator, &config));
+    struct aws_string *region_str = NULL;
+    ASSERT_SUCCESS(aws_dsql_auth_config_infer_region(allocator, &config, &region_str));
 
     /* Verify the region was correctly inferred */
-    ASSERT_NOT_NULL(config.region);
-    ASSERT_STR_EQUALS("us-east-1", config.region);
-
+    ASSERT_NOT_NULL(region_str);
+    ASSERT_TRUE(aws_string_eq_c_str(region_str, "us-east-1"));
+    
+    /* Set the region in the config */
+    config.region = region_str;
+    
     aws_dsql_auth_config_set_expires_in(&config, 450);
     aws_dsql_auth_config_set_credentials_provider(&config, credentials_provider);
 
     /* Set the mock time functions */
-    config.high_res_clock_fn = mock_aws_get_high_res_time;
     config.system_clock_fn = mock_aws_get_system_time;
 
-    /* Initialize and generate auth token */
-    struct aws_dsql_auth_token token;
-    ASSERT_SUCCESS(aws_dsql_auth_token_init(allocator, &token));
-    ASSERT_SUCCESS(aws_dsql_auth_token_generate(allocator, &config, false, &token));
+    /* Generate auth token */
+    struct aws_dsql_auth_token token = {0}; /* Zero-initialize */
+    ASSERT_SUCCESS(aws_dsql_auth_token_generate(&config, false, allocator, &token));
 
     /* Verify token */
     const char *token_str = aws_dsql_auth_token_get_str(&token);
@@ -241,6 +221,7 @@ static int s_aws_dsql_auth_region_detection_test(struct aws_allocator *allocator
     aws_dsql_auth_token_clean_up(&token);
     aws_dsql_auth_config_clean_up(&config);
     aws_credentials_provider_release(credentials_provider);
+    aws_string_destroy(region_str);
 
     /* Clean up the AWS auth library */
     aws_auth_library_clean_up();
@@ -259,7 +240,7 @@ static int s_aws_dsql_auth_region_inference_invalid_hostname_test(struct aws_all
 
     /* Set up auth config */
     struct aws_dsql_auth_config config;
-    ASSERT_SUCCESS(aws_dsql_auth_config_init(allocator, &config));
+    ASSERT_SUCCESS(aws_dsql_auth_config_init(&config));
 
     /* Test cases with invalid hostnames */
     const char *invalid_hostnames[] = {/* Too short cluster ID */
@@ -276,10 +257,11 @@ static int s_aws_dsql_auth_region_inference_invalid_hostname_test(struct aws_all
 
     for (size_t i = 0; i < sizeof(invalid_hostnames) / sizeof(invalid_hostnames[0]); i++) {
         /* Set up config with invalid hostname */
-        ASSERT_SUCCESS(aws_dsql_auth_config_set_hostname(allocator, &config, invalid_hostnames[i]));
+        ASSERT_SUCCESS(aws_dsql_auth_config_set_hostname(&config, invalid_hostnames[i]));
 
         /* Attempt to infer region - should fail because hostname format is invalid */
-        ASSERT_ERROR(AWS_ERROR_INVALID_ARGUMENT, aws_dsql_auth_config_infer_region(allocator, &config));
+        struct aws_string *region_str = NULL;
+        ASSERT_ERROR(AWS_ERROR_INVALID_ARGUMENT, aws_dsql_auth_config_infer_region(allocator, &config, &region_str));
     }
 
     /* Clean up */

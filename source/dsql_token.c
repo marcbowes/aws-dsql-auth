@@ -135,23 +135,31 @@ int main(int argc, char **argv) {
 
     /* Initialize DSQL auth config */
     struct aws_dsql_auth_config auth_config;
-    aws_dsql_auth_config_init(allocator, &auth_config);
+    aws_dsql_auth_config_init(&auth_config);
 
     /* Set hostname */
-    aws_dsql_auth_config_set_hostname(allocator, &auth_config, aws_string_c_str(ctx.hostname));
+    aws_dsql_auth_config_set_hostname(&auth_config, aws_string_c_str(ctx.hostname));
 
     /* Set region if provided, otherwise try to infer from hostname */
     if (ctx.region) {
-        aws_dsql_auth_config_set_region(allocator, &auth_config, aws_string_c_str(ctx.region));
+        auth_config.region = ctx.region;
     } else {
         /* Try to infer region from hostname */
-        if (aws_dsql_auth_config_infer_region(allocator, &auth_config) != AWS_OP_SUCCESS) {
+        struct aws_string *inferred_region = NULL;
+        if (aws_dsql_auth_config_infer_region(allocator, &auth_config, &inferred_region) != AWS_OP_SUCCESS || 
+            inferred_region == NULL) {
             fprintf(
                 stderr,
                 "Error: Failed to infer AWS region from hostname. Please provide region explicitly with --region.\n");
             result = AWS_OP_ERR;
             goto cleanup;
         }
+        
+        /* Store the inferred region in the config */
+        auth_config.region = inferred_region;
+        
+        /* Remember to free the region later */
+        ctx.region = inferred_region;
     }
 
     /* Set expires_in if provided, otherwise default will be used */
@@ -173,11 +181,10 @@ int main(int argc, char **argv) {
     aws_dsql_auth_config_set_credentials_provider(&auth_config, credentials_provider);
 
     /* Generate the auth token */
-    struct aws_dsql_auth_token auth_token;
-    aws_dsql_auth_token_init(allocator, &auth_token);
+    struct aws_dsql_auth_token auth_token = {0}; /* Initialize with zeros */
 
     /* Generate the token */
-    result = aws_dsql_auth_token_generate(allocator, &auth_config, ctx.admin, &auth_token);
+    result = aws_dsql_auth_token_generate(&auth_config, ctx.admin, allocator, &auth_token);
 
     if (result != AWS_OP_SUCCESS) {
         fprintf(stderr, "Error: Failed to generate auth token: %s\n", aws_error_str(aws_last_error()));

@@ -8,6 +8,7 @@
 
 #include <aws/common/allocator.h>
 #include <aws/common/macros.h>
+#include <aws/common/string.h>
 #include <aws/dsql-auth/exports.h>
 #include <aws/io/io.h>
 #include <stdint.h>
@@ -37,9 +38,9 @@ struct aws_dsql_auth_config {
 
     /**
      * The region the database is located in.
-     * If NULL, the region will be inferred from the environment.
+     * Required.
      */
-    const char *region;
+    struct aws_string *region;
 
     /**
      * The number of seconds the signed URL should be valid for.
@@ -50,23 +51,7 @@ struct aws_dsql_auth_config {
     /**
      * For mocking, leave NULL otherwise
      */
-    aws_io_clock_fn *high_res_clock_fn;
-
-    /**
-     * For mocking, leave NULL otherwise
-     */
     aws_io_clock_fn *system_clock_fn;
-    
-    /**
-     * The allocator used to create the config.
-     * Used for memory management.
-     */
-    struct aws_allocator *allocator;
-    
-    /**
-     * Flag indicating if region was dynamically allocated.
-     */
-    bool region_is_owned;
 };
 
 /**
@@ -77,11 +62,6 @@ struct aws_dsql_auth_token {
      * The token string.
      */
     struct aws_string *token;
-
-    /**
-     * The allocator used to create the token.
-     */
-    struct aws_allocator *allocator;
 };
 
 /**
@@ -92,7 +72,7 @@ struct aws_dsql_auth_token {
  *
  * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
  */
-AWS_DSQL_AUTH_API int aws_dsql_auth_config_init(struct aws_allocator *allocator, struct aws_dsql_auth_config *config);
+AWS_DSQL_AUTH_API int aws_dsql_auth_config_init(struct aws_dsql_auth_config *config);
 
 /**
  * Clean up resources associated with the auth token config.
@@ -100,16 +80,6 @@ AWS_DSQL_AUTH_API int aws_dsql_auth_config_init(struct aws_allocator *allocator,
  * @param[in] config The config to clean up
  */
 AWS_DSQL_AUTH_API void aws_dsql_auth_config_clean_up(struct aws_dsql_auth_config *config);
-
-/**
- * Initialize a new auth token.
- *
- * @param[in] allocator The allocator to use for memory allocation
- * @param[out] token The token to initialize
- *
- * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
- */
-AWS_DSQL_AUTH_API int aws_dsql_auth_token_init(struct aws_allocator *allocator, struct aws_dsql_auth_token *token);
 
 /**
  * Set the hostname for the auth token config.
@@ -120,10 +90,7 @@ AWS_DSQL_AUTH_API int aws_dsql_auth_token_init(struct aws_allocator *allocator, 
  *
  * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
  */
-AWS_DSQL_AUTH_API int aws_dsql_auth_config_set_hostname(
-    struct aws_allocator *allocator,
-    struct aws_dsql_auth_config *config,
-    const char *hostname);
+AWS_DSQL_AUTH_API int aws_dsql_auth_config_set_hostname(struct aws_dsql_auth_config *config, const char *hostname);
 
 /**
  * Set the region for the auth token config.
@@ -134,10 +101,7 @@ AWS_DSQL_AUTH_API int aws_dsql_auth_config_set_hostname(
  *
  * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
  */
-AWS_DSQL_AUTH_API int aws_dsql_auth_config_set_region(
-    struct aws_allocator *allocator,
-    struct aws_dsql_auth_config *config,
-    const char *region);
+AWS_DSQL_AUTH_API int aws_dsql_auth_config_set_region(struct aws_dsql_auth_config *config, struct aws_string *region);
 
 /**
  * Try to infer the region from the hostname and set it in the config if successful.
@@ -145,13 +109,15 @@ AWS_DSQL_AUTH_API int aws_dsql_auth_config_set_region(
  * If the hostname does not match this format, the region will not be set.
  *
  * @param[in] allocator The allocator to use for memory allocation
- * @param[in,out] config The config to modify
+ * @param[in] config The config
+ * @param[out] out_region Output parameter to receive the inferred region
  *
  * @return AWS_OP_SUCCESS if the region was successfully inferred and set, AWS_OP_ERR otherwise
  */
 AWS_DSQL_AUTH_API int aws_dsql_auth_config_infer_region(
     struct aws_allocator *allocator,
-    struct aws_dsql_auth_config *config);
+    struct aws_dsql_auth_config *config,
+    struct aws_string **out_region);
 
 /**
  * Set the expiration time for the auth token config.
@@ -182,9 +148,9 @@ AWS_DSQL_AUTH_API void aws_dsql_auth_config_set_credentials_provider(
  * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
  */
 AWS_DSQL_AUTH_API int aws_dsql_auth_token_generate(
-    struct aws_allocator *allocator,
     const struct aws_dsql_auth_config *config,
     bool is_admin,
+    struct aws_allocator *allocator,
     struct aws_dsql_auth_token *token);
 
 /**

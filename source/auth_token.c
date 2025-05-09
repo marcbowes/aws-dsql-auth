@@ -34,11 +34,9 @@
 #define SERVICE_NAME "dsql"
 #define DEFAULT_EXPIRES_IN 900
 
-int aws_dsql_auth_config_init(struct aws_allocator *allocator, struct aws_dsql_auth_config *config) {
+int aws_dsql_auth_config_init(struct aws_dsql_auth_config *config) {
     AWS_ZERO_STRUCT(*config);
     config->expires_in = DEFAULT_EXPIRES_IN;
-    config->allocator = allocator;
-    config->region_is_owned = false;
 
     return AWS_OP_SUCCESS;
 }
@@ -52,37 +50,22 @@ void aws_dsql_auth_config_clean_up(struct aws_dsql_auth_config *config) {
         aws_credentials_provider_release(config->credentials_provider);
     }
 
-    /* Free the region if it was dynamically allocated in aws_dsql_auth_config_infer_region */
-    if (config->region_is_owned && config->region && config->allocator) {
-        aws_mem_release(config->allocator, (void*)config->region);
-    }
-
     AWS_ZERO_STRUCT(*config);
 }
 
-int aws_dsql_auth_config_set_hostname(
-    struct aws_allocator *allocator,
-    struct aws_dsql_auth_config *config,
-    const char *hostname) {
+int aws_dsql_auth_config_set_hostname(struct aws_dsql_auth_config *config, const char *hostname) {
 
-    (void)allocator;
     config->hostname = hostname;
     return AWS_OP_SUCCESS;
 }
 
-int aws_dsql_auth_config_set_region(
-    struct aws_allocator *allocator,
-    struct aws_dsql_auth_config *config,
-    const char *region) {
-
-    (void)allocator;
+int aws_dsql_auth_config_set_region(struct aws_dsql_auth_config *config, struct aws_string *region) {
     config->region = region;
     return AWS_OP_SUCCESS;
 }
 
 void aws_dsql_auth_config_set_expires_in(struct aws_dsql_auth_config *config, uint64_t expires_in) {
-
-    config->expires_in = expires_in > 0 ? expires_in : DEFAULT_EXPIRES_IN;
+    config->expires_in = expires_in;
 }
 
 void aws_dsql_auth_config_set_credentials_provider(
@@ -287,38 +270,10 @@ static int s_load_credentials(
 }
 
 /**
- * Initialize a new auth token.
- *
- * @param[in] allocator The allocator to use for memory allocation
- * @param[out] token The token to initialize
- *
- * @return AWS_OP_SUCCESS if successful, AWS_OP_ERR otherwise
- */
-int aws_dsql_auth_token_init(struct aws_allocator *allocator, struct aws_dsql_auth_token *token) {
-    AWS_ZERO_STRUCT(*token);
-    token->allocator = allocator;
-    /* Don't allocate token yet, as it will be created during token generation */
-    token->token = NULL;
-
-    return AWS_OP_SUCCESS;
-}
-
-/**
  * Helper to validate token configuration.
  * Initializes token if needed and validates config parameters.
  */
-static int s_validate_token_config(
-    struct aws_allocator *allocator,
-    const struct aws_dsql_auth_config *config,
-    struct aws_dsql_auth_token *token) {
-
-    if (!token->allocator) {
-        /* If token is not initialized, initialize it */
-        if (aws_dsql_auth_token_init(allocator, token) != AWS_OP_SUCCESS) {
-            return AWS_OP_ERR;
-        }
-    }
-
+static int s_validate_token_config(const struct aws_dsql_auth_config *config) {
     if (!config->hostname) {
         return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
     }
@@ -492,7 +447,7 @@ static int s_sign_request(
     struct aws_allocator *allocator,
     struct aws_http_message *request,
     struct aws_credentials *credentials,
-    const char *region,
+    struct aws_string *region,
     uint64_t expiration_in_seconds,
     struct aws_date_time date_time) {
 
@@ -509,7 +464,7 @@ static int s_sign_request(
     signing_config.algorithm = AWS_SIGNING_ALGORITHM_V4;
     signing_config.signature_type = AWS_ST_HTTP_REQUEST_QUERY_PARAMS;
     /* Ensure the region is correctly converted to a byte cursor */
-    signing_config.region = aws_byte_cursor_from_c_str(region);
+    signing_config.region = aws_byte_cursor_from_string(region);
     signing_config.service = aws_byte_cursor_from_c_str(SERVICE_NAME);
     signing_config.flags.use_double_uri_encode = false;
     signing_config.flags.should_normalize_uri_path = true;
@@ -558,20 +513,19 @@ static int s_sign_request(
 }
 
 int aws_dsql_auth_token_generate(
-    struct aws_allocator *allocator,
     const struct aws_dsql_auth_config *config,
     bool is_admin,
+    struct aws_allocator *allocator,
     struct aws_dsql_auth_token *token) {
 
     int result;
 
     /* Validate input parameters and initialize token if needed */
-    result = s_validate_token_config(allocator, config, token);
+    result = s_validate_token_config(config);
     if (result != AWS_OP_SUCCESS) {
         return result;
     }
 
-    const char *region = config->region;
     const char *action = is_admin ? ACTION_DB_CONNECT_ADMIN : ACTION_DB_CONNECT;
 
     /* Get the current time */
@@ -600,7 +554,7 @@ int aws_dsql_auth_token_generate(
     }
 
     /* Create a signable and sign the request */
-    result = s_sign_request(allocator, request, credentials, region, config->expires_in, date_time);
+    result = s_sign_request(allocator, request, credentials, config->region, config->expires_in, date_time);
 
     if (result != AWS_OP_SUCCESS) {
         aws_http_message_release(request);
@@ -663,48 +617,20 @@ const char *aws_dsql_auth_token_get_str(const struct aws_dsql_auth_token *token)
  * If the hostname does not match this format, the region will not be set.
  *
  * @param[in] allocator The allocator to use for memory allocation
- * @param[in,out] config The config to modify
+ * @param[in] config The config
+ * @param[out] out_region The inferred region
  *
  * @return AWS_OP_SUCCESS if the region was successfully inferred and set, AWS_OP_ERR otherwise
  */
-int aws_dsql_auth_config_infer_region(struct aws_allocator *allocator, struct aws_dsql_auth_config *config) {
+int aws_dsql_auth_config_infer_region(
+    struct aws_allocator *allocator,
+    struct aws_dsql_auth_config *config,
+    struct aws_string **out_region) {
 
-    if (!config || !config->hostname) {
+    if (!config || !config->hostname || !out_region) {
         return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
-    }
-
-    /* Free any previously owned region */
-    if (config->region_is_owned && config->region && config->allocator) {
-        aws_mem_release(config->allocator, (void*)config->region);
-        config->region = NULL;
-        config->region_is_owned = false;
     }
 
     /* Attempt to extract the region from the hostname */
-    struct aws_string *region_str = NULL;
-    int result = s_extract_region_from_hostname(allocator, config->hostname, &region_str);
-
-    if (result != AWS_OP_SUCCESS || region_str == NULL) {
-        /* Failed to extract region or hostname doesn't match expected format */
-        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
-    }
-
-    /* Make a copy of the region string since we need to free the aws_string */
-    const char *region_cstr = aws_string_c_str(region_str);
-    char *region_copy = aws_mem_calloc(allocator, 1, strlen(region_cstr) + 1);
-    if (!region_copy) {
-        aws_string_destroy(region_str);
-        return aws_raise_error(AWS_ERROR_OOM);
-    }
-    
-    strcpy(region_copy, region_cstr);
-    
-    /* Set the extracted region in the config and mark it as owned */
-    config->region = region_copy;
-    config->region_is_owned = true;
-    
-    /* Free the aws_string now that we've extracted and copied the C string */
-    aws_string_destroy(region_str);
-
-    return AWS_OP_SUCCESS;
+    return s_extract_region_from_hostname(allocator, config->hostname, out_region);
 }
