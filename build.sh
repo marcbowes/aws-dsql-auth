@@ -82,35 +82,6 @@ mkdir -p build
 # Additional dependencies and setup based on platform
 CMAKE_EXTRA_ARGS=""
 
-if [ "$PLATFORM" = "linux" ]; then
-    echo "Linux platform detected. Checking for AWS-LC..."
-    
-    # Check if AWS-LC exists
-    if [ ! -d "aws-lc" ]; then
-        echo "AWS-LC not found. Cloning from GitHub..."
-        git clone https://github.com/awslabs/aws-lc.git
-        
-        echo "Building AWS-LC..."
-        mkdir -p aws-lc/build
-        (cd aws-lc/build && cmake -DCMAKE_INSTALL_PREFIX=$(pwd)/../../aws-lc-install -DBUILD_SHARED_LIBS=ON ..)
-        (cd aws-lc/build && make -j4 install)
-        
-        echo "AWS-LC build completed."
-    elif [ ! -d "aws-lc-install" ]; then
-        echo "AWS-LC source exists but not installed. Building..."
-        mkdir -p aws-lc/build
-        (cd aws-lc/build && cmake -DCMAKE_INSTALL_PREFIX=$(pwd)/../../aws-lc-install -DBUILD_SHARED_LIBS=ON ..)
-        (cd aws-lc/build && make -j4 install)
-        
-        echo "AWS-LC build completed."
-    fi
-    
-    if [ -d "aws-lc-install" ]; then
-        echo "Using locally built AWS-LC"
-        CMAKE_EXTRA_ARGS="-DCMAKE_PREFIX_PATH=$(pwd)/aws-lc-install"
-    fi
-fi
-
 echo "Configuring with CMake..."
 cd build
 cmake -DIN_SOURCE_BUILD=ON ${CMAKE_EXTRA_ARGS} ..
