@@ -8,8 +8,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/aws-sdk/aws-c-common/
 set(BUILD_TESTING OFF CACHE BOOL "Disable tests in dependencies" FORCE)
 
 # Build AWS C libraries in the correct order
-add_subdirectory(s2n-tls)
 add_subdirectory(aws-lc)
+add_subdirectory(s2n-tls)
 add_subdirectory(aws-sdk/aws-c-common)
 add_subdirectory(aws-sdk/aws-c-cal)
 add_subdirectory(aws-sdk/aws-c-io)
@@ -46,8 +46,8 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 
 # Link against AWS libraries
 target_link_libraries(${PROJECT_NAME} PUBLIC
-    s2n
     ssl
+    s2n
     aws-c-auth
     aws-c-common
     aws-c-cal
@@ -95,8 +95,8 @@ aws_set_common_properties(dsql-token)
 # Link against the aws-dsql-auth library and other dependencies
 target_link_libraries(dsql-token PRIVATE
     ${PROJECT_NAME}
-    s2n
     ssl
+    s2n
     aws-c-auth
     aws-c-common
     aws-c-cal
