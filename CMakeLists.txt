@@ -7,6 +7,9 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/aws-sdk/aws-c-common/
 # Disable tests in dependencies
 set(BUILD_TESTING OFF CACHE BOOL "Disable tests in dependencies" FORCE)
 
+# Force static library builds for AWS dependencies
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
+
 # Build AWS C libraries in the correct order
 add_subdirectory(aws-lc)
 add_subdirectory(s2n-tls)
@@ -36,7 +39,7 @@ set(AWS_DSQL_AUTH_SRC
     "source/auth_token.c"
 )
 
-add_library(${PROJECT_NAME} ${AWS_DSQL_AUTH_SRC})
+add_library(${PROJECT_NAME} STATIC ${AWS_DSQL_AUTH_SRC})
 aws_set_common_properties(${PROJECT_NAME})
 
 target_include_directories(${PROJECT_NAME} PUBLIC
