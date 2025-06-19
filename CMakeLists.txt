@@ -2,27 +2,27 @@ cmake_minimum_required(VERSION 3.10)
 project(aws-dsql-auth C)
 
 # Set the path to the AWS common cmake modules
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/aws-sdk/aws-c-common/cmake")
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_INSTALL_PREFIX}/lib/aws-c-common/cmake")
 
 # Disable tests in dependencies
 set(BUILD_TESTING OFF CACHE BOOL "Disable tests in dependencies" FORCE)
 
 # Force static library builds for AWS dependencies
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
-
-# Build AWS C libraries in the correct order
-add_subdirectory(aws-lc)
-add_subdirectory(s2n-tls)
-add_subdirectory(aws-sdk/aws-c-common)
-add_subdirectory(aws-sdk/aws-c-cal)
-add_subdirectory(aws-sdk/aws-c-io)
-add_subdirectory(aws-sdk/aws-c-compression)
-add_subdirectory(aws-sdk/aws-c-http)
-add_subdirectory(aws-sdk/aws-c-sdkutils)
-add_subdirectory(aws-sdk/aws-c-auth)
+set(SEARCH_LIBCRYPTO OFF)
 
 # Re-enable tests for our project
 set(BUILD_TESTING ON CACHE BOOL "Enable tests for our project" FORCE)
+
+# Find the installed AWS libraries
+find_package(aws-c-common REQUIRED)
+find_package(aws-c-cal REQUIRED)
+find_package(aws-c-io REQUIRED)
+find_package(aws-c-compression REQUIRED)
+find_package(aws-c-http REQUIRED)
+find_package(aws-c-sdkutils REQUIRED)
+find_package(aws-c-auth REQUIRED)
+find_package(s2n REQUIRED)
 
 # Include AWS common cmake modules
 include(AwsCFlags)
@@ -49,14 +49,13 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 
 # Link against AWS libraries
 target_link_libraries(${PROJECT_NAME} PUBLIC
-    ssl
-    s2n
-    aws-c-auth
-    aws-c-common
-    aws-c-cal
-    aws-c-io
-    aws-c-http
-    aws-c-sdkutils
+    AWS::s2n
+    AWS::aws-c-auth
+    AWS::aws-c-common
+    AWS::aws-c-cal
+    AWS::aws-c-io
+    AWS::aws-c-http
+    AWS::aws-c-sdkutils
 )
 
 # Installation
@@ -98,14 +97,13 @@ aws_set_common_properties(dsql-token)
 # Link against the aws-dsql-auth library and other dependencies
 target_link_libraries(dsql-token PRIVATE
     ${PROJECT_NAME}
-    ssl
-    s2n
-    aws-c-auth
-    aws-c-common
-    aws-c-cal
-    aws-c-io
-    aws-c-http
-    aws-c-sdkutils
+    AWS::s2n
+    AWS::aws-c-auth
+    AWS::aws-c-common
+    AWS::aws-c-cal
+    AWS::aws-c-io
+    AWS::aws-c-http
+    AWS::aws-c-sdkutils
 )
 
 # Install the dsql-token executable
