@@ -51,3 +51,4 @@ jobs:
         run: |
           chmod +x ./build.sh
           ./build.sh
+          cd build/private/aws-dsql-auth/build && ctest

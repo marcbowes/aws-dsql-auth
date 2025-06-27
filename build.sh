@@ -1,5 +1,34 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+
+# Detect platform
+OS=$(uname -s)
+case "$OS" in
+    Linux*)
+        PLATFORM="linux"
+        ;;
+    Darwin*)
+        PLATFORM="macos"
+        ;;
+    CYGWIN*|MINGW*|MSYS*)
+        PLATFORM="windows"
+        ;;
+    *)
+        echo "Error: Unsupported platform: $OS"
+        exit 1
+        ;;
+esac
+
+echo "Detected platform: $PLATFORM"
+
+# Set WITH_S2N_AWS_LC variable (defaults to true on Linux)
+if [[ "$PLATFORM" == "linux" ]]; then
+    WITH_S2N_AWS_LC=${WITH_S2N_AWS_LC:-true}
+else
+    WITH_S2N_AWS_LC=${WITH_S2N_AWS_LC:-false}
+fi
+
+echo "WITH_S2N_AWS_LC: $WITH_S2N_AWS_LC"
 
 # Automatically compute make parallelism based on available CPU cores
 if command -v nproc &> /dev/null; then
@@ -13,140 +42,67 @@ else
     MAKE_JOBS=4
 fi
 
-echo "Using ${MAKE_JOBS} parallel jobs for make"
+echo "Detected $MAKE_JOBS CPU cores"
 
-# Check for arguments
-if [ "$1" = "clean" ]; then
-    echo "Cleaning build directory..."
-    rm -rf build/*
-    echo "Build directory cleaned."
-    exit 0
-elif [ "$1" = "tidy" ]; then
-    echo "Running clang-format and clang-tidy on codebase (excluding aws-sdk/)..."
-
-    # Check if clang-format and clang-tidy are available
-    if ! command -v clang-format &> /dev/null; then
-        echo "Error: clang-format not found. Please install clang-format."
-        exit 1
-    fi
-
-    if ! command -v clang-tidy &> /dev/null; then
-        echo "Error: clang-tidy not found. Please install clang-tidy."
-        exit 1
-    fi
-
-    # Find all C/C++ source and header files excluding aws-sdk/ and build/
-    FILES=$(find . -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.hpp" \) -not -path "./aws-sdk/*" -not -path "./build/*")
-
-    # Run clang-format on found files
-    echo "Running clang-format..."
-    for FILE in $FILES; do
-        echo "  Formatting $FILE"
-        clang-format -i "$FILE"
-    done
-
-    # Check for compilation database
-    if [ -f "build/compile_commands.json" ]; then
-        echo "Found compilation database. Using it for clang-tidy..."
-
-        # Run clang-tidy on found files using compilation database
-        echo "Running clang-tidy..."
-        for FILE in $FILES; do
-            echo "  Checking $FILE"
-            clang-tidy -p build "$FILE" --checks="-misc-header-include-cycle,-bugprone-easily-swappable-parameters"
-        done
-    else
-        # Create build directory and generate compilation database
-        echo "No compilation database found. Generating one..."
-        mkdir -p build
-        (cd build && cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..)
-
-        if [ -f "build/compile_commands.json" ]; then
-            # Run clang-tidy with compilation database
-            echo "Running clang-tidy with generated compilation database..."
-            for FILE in $FILES; do
-                echo "  Checking $FILE"
-                clang-tidy -p build "$FILE" --checks="-misc-header-include-cycle,-bugprone-easily-swappable-parameters"
-            done
-        else
-            # Fallback without compilation database
-            echo "Warning: Could not generate compilation database. Running clang-tidy with basic options..."
-            for FILE in $FILES; do
-                echo "  Checking $FILE"
-                clang-tidy "$FILE" --checks="-misc-header-include-cycle,-bugprone-easily-swappable-parameters" -- -I./include
-            done
-        fi
-    fi
-
-    echo "Tidy operations completed."
-    exit 0
-fi
-
-# Detect platform
-PLATFORM="unknown"
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    PLATFORM="linux"
-elif [[ "$OSTYPE" == "darwin"* ]]; then
-    PLATFORM="macos"
-fi
+# Set CMAKE_BUILD_PARALLEL_LEVEL for parallel builds
+export CMAKE_BUILD_PARALLEL_LEVEL=$MAKE_JOBS
 
 # Create build directory if it doesn't exist
 mkdir -p build
 
-# Set the installation prefix
 INSTALL_PREFIX=$(pwd)/build/install
-mkdir -p ${INSTALL_PREFIX}
+BUILD_PRIVATE=$(pwd)/build/private
+mkdir -p ${INSTALL_PREFIX} ${BUILD_PRIVATE}
 
 echo "Building dependencies..."
 
-# Build aws-lc
-echo "Building aws-lc..."
-mkdir -p aws-lc/build
-(cd aws-lc/build && cmake -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} .. && make -j${MAKE_JOBS} && make install)
+# Only build aws-lc and s2n-tls if WITH_S2N_AWS_LC is true
+if [[ "$WITH_S2N_AWS_LC" == "true" ]]; then
+    echo "Building aws-lc..."
+    cmake -S aws-lc -B ${BUILD_PRIVATE}/aws-lc/build -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX}
+    cmake --build ${BUILD_PRIVATE}/aws-lc/build --target install
 
-# Build s2n-tls with aws-lc
-echo "Building s2n-tls..."
-mkdir -p s2n-tls/build
-(cd s2n-tls/build && cmake -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX} .. && make -j${MAKE_JOBS} && make install)
+    echo "Building s2n-tls..."
+    cmake -S s2n-tls -B ${BUILD_PRIVATE}/s2n-tls/build -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX}
+    cmake --build ${BUILD_PRIVATE}/s2n-tls/build --target install
+else
+    echo "Skipping aws-lc and s2n-tls build (WITH_S2N_AWS_LC=$WITH_S2N_AWS_LC)"
+fi
 
-# Build AWS C libraries in the correct order
 echo "Building aws-c-common..."
-mkdir -p aws-sdk/aws-c-common/build
-(cd aws-sdk/aws-c-common/build && cmake -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX} .. && make -j${MAKE_JOBS} && make install)
+cmake -S aws-sdk/aws-c-common -B ${BUILD_PRIVATE}/aws-c-common/build -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX}
+cmake --build ${BUILD_PRIVATE}/aws-c-common/build --target install
 
 echo "Building aws-c-cal..."
-mkdir -p aws-sdk/aws-c-cal/build
-(cd aws-sdk/aws-c-cal/build && cmake -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX} .. && make -j${MAKE_JOBS} && make install)
+cmake -S aws-sdk/aws-c-cal -B ${BUILD_PRIVATE}/aws-c-cal/build -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX}
+cmake --build ${BUILD_PRIVATE}/aws-c-cal/build --target install
 
 echo "Building aws-c-io..."
-mkdir -p aws-sdk/aws-c-io/build
-(cd aws-sdk/aws-c-io/build && cmake -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX} .. && make -j${MAKE_JOBS} && make install)
+cmake -S aws-sdk/aws-c-io -B ${BUILD_PRIVATE}/aws-c-io/build -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX}
+cmake --build ${BUILD_PRIVATE}/aws-c-io/build --target install
 
 echo "Building aws-c-compression..."
-mkdir -p aws-sdk/aws-c-compression/build
-(cd aws-sdk/aws-c-compression/build && cmake -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX} .. && make -j${MAKE_JOBS} && make install)
+cmake -S aws-sdk/aws-c-compression -B ${BUILD_PRIVATE}/aws-c-compression/build -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX}
+cmake --build ${BUILD_PRIVATE}/aws-c-compression/build --target install
 
 echo "Building aws-c-http..."
-mkdir -p aws-sdk/aws-c-http/build
-(cd aws-sdk/aws-c-http/build && cmake -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX} .. && make -j${MAKE_JOBS} && make install)
+cmake -S aws-sdk/aws-c-http -B ${BUILD_PRIVATE}/aws-c-http/build -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX}
+cmake --build ${BUILD_PRIVATE}/aws-c-http/build --target install
 
 echo "Building aws-c-sdkutils..."
-mkdir -p aws-sdk/aws-c-sdkutils/build
-(cd aws-sdk/aws-c-sdkutils/build && cmake -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX} .. && make -j${MAKE_JOBS} && make install)
+cmake -S aws-sdk/aws-c-sdkutils -B ${BUILD_PRIVATE}/aws-c-sdkutils/build -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX}
+cmake --build ${BUILD_PRIVATE}/aws-c-sdkutils/build --target install
 
 echo "Building aws-c-auth..."
-mkdir -p aws-sdk/aws-c-auth/build
-(cd aws-sdk/aws-c-auth/build && cmake -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX} .. && make -j${MAKE_JOBS} && make install)
+cmake -S aws-sdk/aws-c-auth -B ${BUILD_PRIVATE}/aws-c-auth/build -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX}
+cmake --build ${BUILD_PRIVATE}/aws-c-auth/build --target install
 
-# Additional dependencies and setup based on platform
-CMAKE_EXTRA_ARGS="-DCMAKE_PREFIX_PATH=${INSTALL_PREFIX}"
+# ---
+#
+#
 
-echo "Configuring aws-dsql-auth with CMake..."
-mkdir -p build/aws-dsql-auth
-cd build/aws-dsql-auth
-cmake -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} ${CMAKE_EXTRA_ARGS} ../..
-
-echo "Building aws-dsql-auth..."
-make -j${MAKE_JOBS}
+echo "Building aws-dsql-auth"
+cmake -S . -B ${BUILD_PRIVATE}/aws-dsql-auth/build -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_PREFIX_PATH=${INSTALL_PREFIX} -DWITH_S2N_AWS_LC=${WITH_S2N_AWS_LC}
+cmake --build ${BUILD_PRIVATE}/aws-dsql-auth/build --target install
 
 echo "Build completed successfully!"

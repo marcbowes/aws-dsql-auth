@@ -1,28 +1,34 @@
 cmake_minimum_required(VERSION 3.10)
 project(aws-dsql-auth C)
 
-# Set the path to the AWS common cmake modules
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_INSTALL_PREFIX}/lib/aws-c-common/cmake")
+# Option to control whether to use s2n and aws-lc
+option(WITH_S2N_AWS_LC "Build with s2n-tls and aws-lc support" OFF)
 
-# Disable tests in dependencies
-set(BUILD_TESTING OFF CACHE BOOL "Disable tests in dependencies" FORCE)
+if (NOT IN_SOURCE_BUILD)
+    # this is required so we can use aws-c-common's CMake modules
+    find_package(aws-c-common REQUIRED)
+endif()
 
-# Force static library builds for AWS dependencies
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static libraries" FORCE)
-set(SEARCH_LIBCRYPTO OFF)
-
-# Re-enable tests for our project
-set(BUILD_TESTING ON CACHE BOOL "Enable tests for our project" FORCE)
+include(AwsCFlags)
+include(AwsCheckHeaders)
+include(AwsSharedLibSetup)
+include(AwsSanitizers)
+include(AwsFindPackage)
+include(GNUInstallDirs)
 
 # Find the installed AWS libraries
-find_package(aws-c-common REQUIRED)
-find_package(aws-c-cal REQUIRED)
-find_package(aws-c-io REQUIRED)
-find_package(aws-c-compression REQUIRED)
-find_package(aws-c-http REQUIRED)
-find_package(aws-c-sdkutils REQUIRED)
-find_package(aws-c-auth REQUIRED)
-find_package(s2n REQUIRED)
+aws_use_package(aws-c-common)
+aws_use_package(aws-c-cal)
+aws_use_package(aws-c-io)
+aws_use_package(aws-c-compression)
+aws_use_package(aws-c-http)
+aws_use_package(aws-c-sdkutils)
+aws_use_package(aws-c-auth)
+
+# Only find s2n if WITH_S2N_AWS_LC is enabled
+if(WITH_S2N_AWS_LC)
+    find_package(s2n REQUIRED)
+endif()
 
 # Include AWS common cmake modules
 include(AwsCFlags)
@@ -48,8 +54,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 )
 
 # Link against AWS libraries
-target_link_libraries(${PROJECT_NAME} PUBLIC
-    AWS::s2n
+set(AWS_DSQL_AUTH_LIBS
     AWS::aws-c-auth
     AWS::aws-c-common
     AWS::aws-c-cal
@@ -57,6 +62,13 @@ target_link_libraries(${PROJECT_NAME} PUBLIC
     AWS::aws-c-http
     AWS::aws-c-sdkutils
 )
+
+# Add s2n only if WITH_S2N_AWS_LC is enabled
+if(WITH_S2N_AWS_LC)
+    list(APPEND AWS_DSQL_AUTH_LIBS AWS::s2n)
+endif()
+
+target_link_libraries(${PROJECT_NAME} PUBLIC ${AWS_DSQL_AUTH_LIBS})
 
 # Installation
 install(
@@ -97,13 +109,7 @@ aws_set_common_properties(dsql-token)
 # Link against the aws-dsql-auth library and other dependencies
 target_link_libraries(dsql-token PRIVATE
     ${PROJECT_NAME}
-    AWS::s2n
-    AWS::aws-c-auth
-    AWS::aws-c-common
-    AWS::aws-c-cal
-    AWS::aws-c-io
-    AWS::aws-c-http
-    AWS::aws-c-sdkutils
+    ${AWS_DSQL_AUTH_LIBS}
 )
 
 # Install the dsql-token executable

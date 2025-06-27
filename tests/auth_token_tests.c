@@ -60,7 +60,7 @@ static int s_setup_auth_config(
 
     ASSERT_SUCCESS(aws_dsql_auth_config_init(config));
     aws_dsql_auth_config_set_hostname(config, aws_string_c_str(s_hostname));
-    config->region = s_region; /* Set region directly */
+    aws_dsql_auth_config_set_region(config, (struct aws_string *)s_region); /* Cast away const */
     aws_dsql_auth_config_set_expires_in(config, expires_in);
     aws_dsql_auth_config_set_credentials_provider(config, credentials_provider);
 
