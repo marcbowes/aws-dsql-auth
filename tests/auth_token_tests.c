@@ -273,9 +273,66 @@ static int s_aws_dsql_auth_region_inference_invalid_hostname_test(struct aws_all
     return AWS_OP_SUCCESS;
 }
 
+/**
+ * Test that region inference works with private endpoints (e.g., dsql-gamma)
+ */
+static int s_aws_dsql_auth_region_inference_private_endpoint_test(struct aws_allocator *allocator, void *ctx) {
+    (void)ctx;
+
+    /* Initialize the AWS auth library */
+    aws_auth_library_init(allocator);
+
+    /* Set up auth config */
+    struct aws_dsql_auth_config config;
+    ASSERT_SUCCESS(aws_dsql_auth_config_init(&config));
+
+    /* Test cases with private endpoint hostnames */
+    struct {
+        const char *hostname;
+        const char *expected_region;
+    } test_cases[] = {/* Standard dsql-gamma private endpoint */
+                      {"24abtvxzzxzrrfaxyduobmpfea.dsql-foobar.us-east-1.on.aws", "us-east-1"},
+
+                      /* Different region */
+                      {"24abtvxzzxzrrfaxyduobmpfea.dsql-bazquux.eu-west-1.on.aws", "eu-west-1"},
+
+                      /* Different private endpoint suffix */
+                      {"24abtvxzzxzrrfaxyduobmpfea.dsql-axeaxeaxe.us-west-2.on.aws", "us-west-2"},
+
+                      /* Standard dsql endpoint should still work */
+                      {"24abtvxzzxzrrfaxyduobmpfea.dsql.ap-southeast-1.on.aws", "ap-southeast-1"}};
+
+    for (size_t i = 0; i < sizeof(test_cases) / sizeof(test_cases[0]); i++) {
+        /* Set up config with test hostname */
+        aws_dsql_auth_config_set_hostname(&config, test_cases[i].hostname);
+
+        /* Infer the region from the hostname */
+        struct aws_string *region_str = NULL;
+        ASSERT_SUCCESS(aws_dsql_auth_config_infer_region(allocator, &config, &region_str));
+
+        /* Verify the region was correctly inferred */
+        ASSERT_NOT_NULL(region_str);
+        ASSERT_TRUE(aws_string_eq_c_str(region_str, test_cases[i].expected_region));
+
+        /* Clean up region string for this iteration */
+        aws_string_destroy(region_str);
+    }
+
+    /* Clean up */
+    aws_dsql_auth_config_clean_up(&config);
+
+    /* Clean up the AWS auth library */
+    aws_auth_library_clean_up();
+
+    return AWS_OP_SUCCESS;
+}
+
 AWS_TEST_CASE(aws_dsql_auth_signing_works_test, s_aws_dsql_auth_signing_works_test);
 AWS_TEST_CASE(aws_dsql_auth_signing_works_admin_test, s_aws_dsql_auth_signing_works_admin_test);
 AWS_TEST_CASE(aws_dsql_auth_region_detection_test, s_aws_dsql_auth_region_detection_test);
+AWS_TEST_CASE(
+    aws_dsql_auth_region_inference_private_endpoint_test,
+    s_aws_dsql_auth_region_inference_private_endpoint_test);
 AWS_TEST_CASE(
     aws_dsql_auth_region_inference_invalid_hostname_test,
     s_aws_dsql_auth_region_inference_invalid_hostname_test);

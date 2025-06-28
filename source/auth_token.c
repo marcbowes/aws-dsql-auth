@@ -24,8 +24,8 @@
 #include <stdio.h>
 #include <string.h> /* for strlen, strcmp, memcpy */
 
-/* Hostname format: <cluster-id>.dsql.<region>.on.aws, where cluster-id is 26 chars */
-#define DSQL_HOSTNAME_SUFFIX ".dsql."
+/* Hostname format: <cluster-id>.dsql*.<region>.on.aws, where cluster-id is 26
+ * chars and dsql* can be dsql, dsql-xxx, etc. */
 #define DSQL_HOSTNAME_END ".on.aws"
 
 enum { CLUSTER_ID_LENGTH = 26 };
@@ -166,7 +166,7 @@ static void s_aws_credentials_callback_state_clean_up(struct aws_credentials_cal
 
     aws_condition_variable_clean_up(&state->condition_var);
     aws_mutex_clean_up(&state->mutex);
-    
+
     AWS_ZERO_STRUCT(*state);
 }
 
@@ -194,9 +194,9 @@ static bool s_is_credentials_complete(void *userdata) {
 }
 
 /**
- * Extract the AWS region from a DSQL hostname.
- * Expected format: '<cluster-id>.dsql.<region>.on.aws'
- * Where cluster-id is always 26 characters.
+ * Extract the AWS region from a DSQL hostname. Expected format:
+ * '<cluster-id>.dsql*.<region>.on.aws' Where cluster-id is always 26 characters
+ * and dsql* can be 'dsql', 'dsql-xxx', etc.
  *
  * @param[in] allocator The allocator to use for memory allocation
  * @param[in] hostname The hostname to extract the region from
@@ -216,48 +216,81 @@ static int s_extract_region_from_hostname(
     }
 
     size_t hostname_len = strlen(hostname);
-
-    /* Check if hostname is long enough to contain all required parts */
-    /* Minimum length: 26 (cluster-id) + 6 (.dsql.) + 1 (min region length) + 7 (.on.aws) = 40 */
-    if (hostname_len < 40) {
-        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT); /* Not enough characters for the expected format */
+    if (hostname_len == 0) {
+        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
     }
 
-    /* Ensure hostname has the right prefix: exactly 26 chars followed by ".dsql." */
-    const char *dsql_suffix_pos = strstr(hostname, DSQL_HOSTNAME_SUFFIX);
-    if (!dsql_suffix_pos || (dsql_suffix_pos - hostname) != CLUSTER_ID_LENGTH) {
-        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT); /* Cluster ID not exactly 26 chars or .dsql. not found */
-    }
-
-    /* Ensure hostname ends with ".on.aws" */
-    const char *on_aws_suffix = hostname + hostname_len - strlen(DSQL_HOSTNAME_END);
-    if (strcmp(on_aws_suffix, DSQL_HOSTNAME_END) != 0) {
-        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT); /* Doesn't end with .on.aws */
-    }
-
-    /* Extract the region between ".dsql." and ".on.aws" */
-    const char *region_start = dsql_suffix_pos + strlen(DSQL_HOSTNAME_SUFFIX);
-    const char *region_end = on_aws_suffix;
-
-    size_t region_len = region_end - region_start;
-    if (region_len <= 0) {
-        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT); /* No region found */
-    }
-
-    /* Allocate memory for the region string */
-    char *region_buffer = aws_mem_calloc(allocator, 1, region_len + 1); /* +1 for null terminator */
-    if (!region_buffer) {
+    /* Create a working copy of the hostname for tokenization */
+    char *hostname_copy = aws_mem_calloc(allocator, 1, hostname_len + 1);
+    if (!hostname_copy) {
         return aws_raise_error(AWS_ERROR_OOM);
     }
+    strcpy(hostname_copy, hostname);
 
-    /* Copy the region substring */
-    memcpy(region_buffer, region_start, region_len);
+    /* Split hostname by periods and collect parts */
+    char *parts[16]; /* Should be enough for any reasonable hostname */
+    int part_count = 0;
 
-    /* Create the aws_string from our buffer */
-    *region_str = aws_string_new_from_c_str(allocator, region_buffer);
+    /* Use strtok_r for thread safety if available, otherwise strtok */
+    char *saveptr = NULL;
+    char *token = strtok_r(hostname_copy, ".", &saveptr);
 
-    /* Free the temporary buffer */
-    aws_mem_release(allocator, region_buffer);
+    while (token != NULL && part_count < 16) {
+        parts[part_count++] = token;
+        token = strtok_r(NULL, ".", &saveptr);
+    }
+
+    /* Validate minimum structure: cluster-id, dsql*, region, on, aws */
+    if (part_count < 5) {
+        aws_mem_release(allocator, hostname_copy);
+        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
+    }
+
+    /* Check that it ends with "on.aws" */
+    if (strcmp(parts[part_count - 1], "aws") != 0 || strcmp(parts[part_count - 2], "on") != 0) {
+        aws_mem_release(allocator, hostname_copy);
+        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
+    }
+
+    /* Find the dsql part (starts with "dsql") */
+    int dsql_index = -1;
+    for (int i = 1; i < part_count - 2; i++) { /* Skip first part (cluster-id) and last two parts (on.aws) */
+        if (strncmp(parts[i], "dsql", 4) == 0) {
+            dsql_index = i;
+            break;
+        }
+    }
+
+    if (dsql_index == -1) {
+        aws_mem_release(allocator, hostname_copy);
+        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT); /* No dsql part found */
+    }
+
+    /* Validate cluster ID length (should be exactly 26 characters) */
+    if (strlen(parts[0]) != CLUSTER_ID_LENGTH) {
+        aws_mem_release(allocator, hostname_copy);
+        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
+    }
+
+    /* The region should be the part immediately after the dsql part */
+    int region_index = dsql_index + 1;
+    if (region_index >= part_count - 2) { /* Must have region before "on.aws" */
+        aws_mem_release(allocator, hostname_copy);
+        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
+    }
+
+    /* Extract the region */
+    const char *region = parts[region_index];
+    if (strlen(region) == 0) {
+        aws_mem_release(allocator, hostname_copy);
+        return aws_raise_error(AWS_ERROR_INVALID_ARGUMENT);
+    }
+
+    /* Create the aws_string for the region */
+    *region_str = aws_string_new_from_c_str(allocator, region);
+
+    /* Clean up the working copy */
+    aws_mem_release(allocator, hostname_copy);
 
     if (!*region_str) {
         return aws_raise_error(AWS_ERROR_OOM);
@@ -412,7 +445,7 @@ static int s_aws_signing_userdata_init(
     struct aws_allocator *allocator,
     struct aws_signing_userdata *context,
     struct aws_http_message *request) {
-    
+
     AWS_ZERO_STRUCT(*context);
 
     if (aws_mutex_init(&context->mutex)) {
@@ -444,9 +477,9 @@ static void s_aws_signing_userdata_clean_up(struct aws_signing_userdata *context
 
     aws_condition_variable_clean_up(&context->condition_var);
     aws_mutex_clean_up(&context->mutex);
-    
+
     /* Note: We don't release the request here as that's managed by the caller */
-    
+
     AWS_ZERO_STRUCT(*context);
 }
 
